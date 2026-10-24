@@ -1,0 +1,14 @@
+# Game files are never committed
+*.bin
+*.cue
+*.iso
+*.chd
+*.pce
+*.wad
+*.7z
+*.dat
+*.DAT
+*.at3
+work/
+build/
+__pycache__/
