@@ -246,10 +246,10 @@ index 6e4d643..07a11fb 100644
  
 diff --git a/src/rondo_trace.cpp b/src/rondo_trace.cpp
 new file mode 100644
-index 0000000..62de5b6
+index 0000000..789e572
 --- /dev/null
 +++ b/src/rondo_trace.cpp
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,184 @@
 +#include "rondo_trace.h"
 +#include "memory.h"
 +#include "memory_inline.h"
@@ -355,6 +355,11 @@ index 0000000..62de5b6
 +    int size = k_huc6280_opcode_sizes[opcode];
 +    if (size < 1) size = 1;
 +    if (off + size > 0x2000) size = 0x2000 - off;
++
++    // Work RAM holds small self-patching transfer routines (TIA/TIN/TII with
++    // rewritten operands). Only the opcode matters there, so compare one byte.
++    if (bank >= 0xF8)
++        size = 1;
 +
 +    int id = g_current[bank];
 +    if (id < 0 || memcmp(g_snaps[id]->data + off, src + off, size) != 0)
