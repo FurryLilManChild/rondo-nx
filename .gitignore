@@ -18,3 +18,7 @@ out/
 saves/
 *.state
 *.rtr
+*.nro
+*.elf
+*.nacp
+*.map
