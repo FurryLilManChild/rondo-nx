@@ -17,7 +17,8 @@ Needs the same tools as mof-nx: Visual Studio 2022 Build Tools (C++), LLVM (clan
 
 Folder layout expected in `C:\rondo-nx` (all ignored by git):
 
-- `Akumajou Dracula X - Chi no Rondo (Japan) (FABT, FACT)\` with the `.cue` and `.bin` files
+- `english\` with the English fan translation (v1.03) extracted: the default language
+- `Akumajou Dracula X - Chi no Rondo (Japan) (FABT, FACT)\` with the Japanese original `.cue` and `.bin` files
 - `syscard3.pce`
 - `tracer\traces\` with the `.rtr` coverage traces
 
@@ -28,7 +29,9 @@ cd C:\rondo-nx
 powershell -ExecutionPolicy Bypass -File tools\win\build_pc.ps1
 ```
 
-The result is `out\pc\rondo-nx.exe` with a `rondo-nx.ini` that points at the game files. Logs go to `out\logs\`.
+The result is `out\pc\rondo-nx.exe` with a `rondo-nx.ini` that points at both discs. Logs go to `out\logs\`.
+
+Language: `language=english` (default) or `language=japanese` in `rondo-nx.ini`, or `--japanese` on the command line. Each language keeps its own save (`saves\rondo-en.sav`, `saves\rondo.sav`). One build covers both: translated blocks are matched by their bytes, so the English patch's changed code and the original code sit side by side.
 
 ## Building for Switch
 
@@ -43,7 +46,8 @@ It translates the game code, compiles `platforms\switch\rondo-nx.nro` through de
 
 - `switch/rondo-nx/rondo-nx.nro`
 - `switch/rondo-nx/syscard3.pce`
-- `switch/rondo-nx/game/` (the `.cue` and all `.bin` tracks)
+- `switch/rondo-nx/game/` (the English `.cue` and all `.bin` tracks)
+- `switch/rondo-nx/game-jp/` (only with `-WithJapanese`; pick it with `language=japanese` in `switch/rondo-nx/rondo-nx.ini`)
 
 Launch from the homebrew menu opened with a title override (hold R while starting a game), so the app gets full memory and the CPU boost clock. Switch controls: Y attack, B jump, X subweapon, + Run, - Select, D-pad or left stick to move, hold + and - together to quit.
 

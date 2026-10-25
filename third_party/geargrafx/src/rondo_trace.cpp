@@ -32,6 +32,9 @@ std::string g_session;
 FILE* g_cdlog = NULL;
 u32 g_exec_count = 0;
 u32 g_unique_exec = 0;
+// Operand bytes seen changing while the opcode stayed the same (self-modifying code).
+u8 g_volatile[256][0x400];
+bool g_volatile_used[256];
 } // namespace
 std::map<u32,u32> g_rt_hist; bool g_rt_hist_on = false;
 namespace {
@@ -108,9 +111,24 @@ void rondo_trace_instruction(Memory* memory, u16 pc)
     // rewritten operands). Only the opcode matters there, so compare one byte.
     if (bank >= 0xF8)
         size = 1;
+    // Operands already known to be rewritten at run time: compare the opcode only.
+    if (size > 1 && (g_volatile[bank][(off + 1) >> 3] >> ((off + 1) & 7) & 1))
+        size = 1;
 
     int id = g_current[bank];
-    if (id < 0 || memcmp(g_snaps[id]->data + off, src + off, size) != 0)
+    if (id >= 0 && size > 1 && g_snaps[id]->data[off] == src[off] &&
+        memcmp(g_snaps[id]->data + off + 1, src + off + 1, size - 1) != 0)
+    {
+        // Same opcode, different operands: self-modifying code, not a new overlay.
+        for (int k = 1; k < size; k++)
+        {
+            int o = off + k;
+            g_volatile[bank][o >> 3] |= (u8)(1 << (o & 7));
+        }
+        g_volatile_used[bank] = true;
+        g_dirty = true;
+    }
+    else if (id < 0 || memcmp(g_snaps[id]->data + off, src + off, size) != 0)
     {
         id = take_snapshot(bank, src);
         g_current[bank] = id;
@@ -158,7 +176,7 @@ void rondo_trace_save(void)
         return;
     u32 n = (u32)g_snaps.size();
     fwrite("RTRC", 1, 4, f);
-    u32 ver = 1;
+    u32 ver = 2;
     fwrite(&ver, 4, 1, f);
     fwrite(&n, 4, 1, f);
     for (u32 i = 0; i < n; i++)
@@ -169,6 +187,16 @@ void rondo_trace_save(void)
         fwrite(&s->hash, 8, 1, f);
         fwrite(s->data, 1, 0x2000, f);
         fwrite(s->exec, 1, 0x400, f);
+    }
+    u32 nv = 0;
+    for (int b = 0; b < 256; b++) if (g_volatile_used[b]) nv++;
+    fwrite(&nv, 4, 1, f);
+    for (int b = 0; b < 256; b++)
+    {
+        if (!g_volatile_used[b]) continue;
+        u8 hdr[4] = { (u8)b, 0, 0, 0 };
+        fwrite(hdr, 1, 4, f);
+        fwrite(g_volatile[b], 1, 0x400, f);
     }
     fclose(f);
     remove(path.c_str());

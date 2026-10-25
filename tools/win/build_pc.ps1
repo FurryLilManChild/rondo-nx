@@ -49,15 +49,19 @@ Step 'Compile' 'compile.log' {
     cmake --build $build
 }
 
-# Point the app at the game files in this folder.
-$cue = Get-ChildItem -Path $repo -Filter '*.cue' -Recurse -Depth 1 |
-    Where-Object { $_.FullName -notmatch 'English' -and $_.FullName -notmatch '\\out\\' } | Select-Object -First 1
+# Point the app at the game files in this folder: the English fan translation (default) and the Japanese original.
+$cueEn = Get-ChildItem -Path (Join-Path $repo 'english') -Filter '*.cue' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+$cueJp = Get-ChildItem -Path $repo -Filter '*.cue' -Recurse -Depth 1 |
+    Where-Object { $_.FullName -notmatch '\\english\\' -and $_.FullName -notmatch '\\out\\' } | Select-Object -First 1
 $bios = Get-ChildItem -Path $repo -Filter 'syscard3*.pce' -Depth 0 | Select-Object -First 1
 $ini = Join-Path $build 'rondo-nx.ini'
-if (-not (Test-Path $ini)) {
+if (-not (Test-Path $ini) -or -not (Select-String -Path $ini -Pattern '^cue_english=' -Quiet)) {
     @(
         '# rondo-nx settings',
-        "cue=$($cue.FullName)",
+        '# language: english (fan translation v1.03) or japanese',
+        'language=english',
+        "cue_english=$($cueEn.FullName)",
+        "cue_japanese=$($cueJp.FullName)",
         "bios=$($bios.FullName)",
         '# 1 = translated code (default), 0 = interpreter only',
         'translated=1',
@@ -65,7 +69,9 @@ if (-not (Test-Path $ini)) {
         'fullscreen=0',
         'smooth=0'
     ) | Set-Content -Path $ini -Encoding ascii
+    Write-Host "Wrote settings: $ini"
 }
+if (-not $cueEn) { Write-Host "Note: no English disc found under english\ (extract the English v1.03 .7z there)." }
 
 Write-Host ''
 Write-Host "Built: $build\rondo-nx.exe"

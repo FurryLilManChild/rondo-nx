@@ -39,7 +39,8 @@ static std::string trim(const std::string& s)
 
 struct Config
 {
-    std::string cue, bios, saves;
+    std::string cue, cue_english, cue_japanese, bios, saves;
+    std::string language = "english";
     bool xlat = true;
     int scale = 4;
     bool fullscreen = false;
@@ -60,6 +61,9 @@ static void load_config(Config& c)
         if (eq == std::string::npos) continue;
         std::string k = trim(l.substr(0, eq)), v = trim(l.substr(eq + 1));
         if (k == "cue") c.cue = v;
+        else if (k == "cue_english") c.cue_english = v;
+        else if (k == "cue_japanese") c.cue_japanese = v;
+        else if (k == "language") c.language = v;
         else if (k == "bios") c.bios = v;
         else if (k == "saves") c.saves = v;
         else if (k == "translated") c.xlat = (v != "0" && v != "false");
@@ -148,14 +152,20 @@ int main(int argc, char** argv)
     {
         if (!strcmp(argv[i], "--interpreted")) cfg.xlat = false;
         else if (!strcmp(argv[i], "--fullscreen")) cfg.fullscreen = true;
+        else if (!strcmp(argv[i], "--japanese")) cfg.language = "japanese";
+        else if (!strcmp(argv[i], "--english")) cfg.language = "english";
     }
     if (cfg.saves.empty()) cfg.saves = join(g_base, "saves");
     SDL_CreateDirectory(cfg.saves.c_str());
 
+    // Pick the disc for the chosen language (English is the fan translation v1.03).
+    bool japanese = (cfg.language == "japanese" || cfg.language == "jp");
+    if (japanese && !cfg.cue_japanese.empty()) cfg.cue = cfg.cue_japanese;
+    else if (!japanese && !cfg.cue_english.empty()) cfg.cue = cfg.cue_english;
     if (cfg.cue.empty() || !file_exists(cfg.cue) || cfg.bios.empty() || !file_exists(cfg.bios))
     {
         std::string msg = "Couldn't find the game files.\n\nEdit rondo-nx.ini next to rondo-nx.exe and set:\n"
-                          "cue=<path to the Japanese .cue file>\nbios=<path to syscard3.pce>\n\nCurrently:\ncue=" + cfg.cue + "\nbios=" + cfg.bios;
+                          "cue_english=<path to the English .cue file>\ncue_japanese=<path to the Japanese .cue file>\nbios=<path to syscard3.pce>\n\nCurrently (" + cfg.language + "):\ncue=" + cfg.cue + "\nbios=" + cfg.bios;
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "rondo-nx", msg.c_str(), NULL);
         return 1;
     }
@@ -167,8 +177,9 @@ int main(int argc, char** argv)
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "rondo-nx", "The emulated CD or System Card failed to load. Check the paths in rondo-nx.ini.", NULL);
         return 1;
     }
-    std::string bram = join(cfg.saves, "rondo.sav");
-    std::string state = join(cfg.saves, "rondo.state");
+    // Separate saves per language: the two discs keep different save data.
+    std::string bram = join(cfg.saves, japanese ? "rondo.sav" : "rondo-en.sav");
+    std::string state = join(cfg.saves, japanese ? "rondo.state" : "rondo-en.state");
     if (file_exists(bram)) g_core->LoadRam(bram.c_str(), true);
     rondo_xlat_attach(g_core, cfg.xlat);
 
@@ -312,8 +323,8 @@ int main(int argc, char** argv)
             prev_x = x; prev_m = m;
             char title[160];
             double pct = (dx + dm) ? 100.0 * (double)dx / (double)(dx + dm) : 0.0;
-            snprintf(title, sizeof(title), "rondo-nx  |  %d fps  |  %s: %.1f%% of instructions%s",
-                frames, cfg.xlat ? "translated" : "interpreter only", cfg.xlat ? pct : 0.0, paused ? "  |  PAUSED" : "");
+            snprintf(title, sizeof(title), "rondo-nx (%s)  |  %d fps  |  %s: %.1f%% of instructions%s",
+                japanese ? "Japanese" : "English", frames, cfg.xlat ? "translated" : "interpreter only", cfg.xlat ? pct : 0.0, paused ? "  |  PAUSED" : "");
             SDL_SetWindowTitle(win, title);
             frames = 0;
             last_title = now_ms;

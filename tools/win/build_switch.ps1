@@ -4,9 +4,10 @@
 #   3. Copies the .nro, syscard3.pce and the game files into out\switch\sd\switch\rondo-nx\.
 # Logs go to out\logs\.
 #
-# Usage (from C:\rondo-nx): powershell -ExecutionPolicy Bypass -File tools\win\build_switch.ps1 [-Clean] [-NoGameCopy]
+# Usage (from C:\rondo-nx): powershell -ExecutionPolicy Bypass -File tools\win\build_switch.ps1 [-Clean] [-NoGameCopy] [-WithJapanese]
+#   The English disc (english\...) goes in game\; -WithJapanese also copies the Japanese disc to game-jp\.
 
-param([switch]$Clean, [switch]$NoGameCopy, [int]$Jobs = 0)
+param([switch]$Clean, [switch]$NoGameCopy, [switch]$WithJapanese, [int]$Jobs = 0)
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -56,12 +57,20 @@ New-Item -ItemType Directory -Force -Path $sd | Out-Null
 Copy-Item $nro $sd -Force
 Copy-Item (Join-Path $repo 'syscard3.pce') $sd -Force
 if (-not $NoGameCopy) {
-    $gameSrc = Get-ChildItem -Path $repo -Directory | Where-Object { $_.Name -like 'Akumajou Dracula X - Chi no Rondo (Japan)*' } | Select-Object -First 1
+    $en = Get-ChildItem -Path (Join-Path $repo 'english') -Filter '*.cue' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $en) { Write-Host "No English disc under english\ (extract the English v1.03 .7z there)."; exit 1 }
     $gameDst = Join-Path $sd 'game'
     New-Item -ItemType Directory -Force -Path $gameDst | Out-Null
     Write-Host ''
-    Write-Host "== Copying game files (about 500 MB) to $gameDst"
-    Copy-Item (Join-Path $gameSrc.FullName '*') $gameDst -Force
+    Write-Host "== Copying the English disc (about 500 MB) to $gameDst"
+    Copy-Item (Join-Path $en.DirectoryName '*') $gameDst -Force
+    if ($WithJapanese) {
+        $jp = Get-ChildItem -Path $repo -Directory | Where-Object { $_.Name -like 'Akumajou Dracula X - Chi no Rondo (Japan)*' } | Select-Object -First 1
+        $jpDst = Join-Path $sd 'game-jp'
+        New-Item -ItemType Directory -Force -Path $jpDst | Out-Null
+        Write-Host "== Copying the Japanese disc to $jpDst"
+        Copy-Item (Join-Path $jp.FullName '*') $jpDst -Force
+    }
 }
 
 Write-Host ''

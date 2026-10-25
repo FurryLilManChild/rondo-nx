@@ -2,6 +2,25 @@
 
 Newest first.
 
+## 2026-10-25 (midday): English, and self-modifying code
+
+- English (fan translation v1.03) is now the default language; the Japanese original stays selectable
+  (`language=` in the ini, `--japanese`). Separate saves per language. One build covers both discs.
+- The English patch adds a self-modifying subtitle routine (bank 6C, around `$9B36`: it rewrites the operands of
+  its own LDA/STA each pass). The Japanese game also had one (a jump table patched into a `JMP (abs,X)`).
+- Tracer v2 records operand bytes that change while the opcode stays (`.rtr` version 2, volatile bitmaps) and no
+  longer snapshots a new image for them (English boot: 2,225 images before, 15 after).
+- Translator: instructions with rewritten operands read them live from memory (no baked constants); constant
+  stores into the code's own page are detected statically too; blocks match with a byte mask that skips those
+  bytes. Rewritten opcodes are left to the interpreter.
+- English coverage: boot and intro, file select, name entry, menus (Tactics, Sound Test), every stage, alternate and
+  boss version, and a real game over (27 traces in `tracer/traces/english`). The fan patch's name check differs:
+  the stage-select name does not unlock the menu entry in English; stages were forced through `$81` instead.
+- Lockstep, English: boot, menus, name entry, stages 0, 3, 9, boss 10, game over: zero differences. Japanese
+  stages rechecked: zero. Cold boots need the same power-on seed in both cores (`GG_SEED`, added to the core for
+  testing); with it, four seeds give zero differences. The one mismatch seen was the two cores seeding a second
+  apart.
+
 ## 2026-10-25 (overnight): first translated build
 
 - Coverage: Mark's sessions (Stages 0-2 with bosses, the ending, Maria, Item Crashes, game over) plus 22 scripted runs

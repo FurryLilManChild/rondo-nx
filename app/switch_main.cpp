@@ -6,7 +6,9 @@
 // SD card layout:
 //   sdmc:/switch/rondo-nx/rondo-nx.nro
 //   sdmc:/switch/rondo-nx/syscard3.pce
-//   sdmc:/switch/rondo-nx/game/<the .cue and all the .bin tracks>
+//   sdmc:/switch/rondo-nx/game/<English (fan translation v1.03) .cue and all .bin tracks>
+//   sdmc:/switch/rondo-nx/game-jp/<optional: Japanese original .cue and .bin tracks>
+//   sdmc:/switch/rondo-nx/rondo-nx.ini   (optional: language=japanese)
 //   sdmc:/switch/rondo-nx/saves/            (created on first run)
 #include <switch.h>
 #include <dirent.h>
@@ -185,6 +187,7 @@ int main(int argc, char** argv)
     std::string ini = std::string(k_dir) + "/rondo-nx.ini";
     std::string cue, bios = std::string(k_dir) + "/syscard3.pce";
     bool xlat = true;
+    bool japanese = false;
     FILE* f = fopen(ini.c_str(), "r");
     if (f)
     {
@@ -196,16 +199,22 @@ int main(int argc, char** argv)
             if (l.compare(0, 4, "cue=") == 0) cue = l.substr(4);
             else if (l.compare(0, 5, "bios=") == 0) bios = l.substr(5);
             else if (l == "translated=0") xlat = false;
+            else if (l == "language=japanese") japanese = true;
         }
         fclose(f);
     }
-    if (cue.empty()) cue = find_cue(std::string(k_dir) + "/game");
-    if (cue.empty() || !exists(cue)) { show_error("Game not found. Put the .cue and all .bin tracks in\n  sdmc:/switch/rondo-nx/game/"); return 0; }
+    if (cue.empty()) cue = find_cue(std::string(k_dir) + (japanese ? "/game-jp" : "/game"));
+    if (cue.empty() || !exists(cue))
+    {
+        show_error(japanese ? "Japanese disc not found. Put its .cue and all .bin tracks in\n  sdmc:/switch/rondo-nx/game-jp/"
+                            : "Game not found. Put the English .cue and all .bin tracks in\n  sdmc:/switch/rondo-nx/game/");
+        return 0;
+    }
     if (!exists(bios)) { show_error("System Card not found. Copy syscard3.pce to\n  sdmc:/switch/rondo-nx/syscard3.pce"); return 0; }
 
     std::string saves = std::string(k_dir) + "/saves";
     mkdir(saves.c_str(), 0777);
-    std::string bram = saves + "/rondo.sav";
+    std::string bram = saves + (japanese ? "/rondo.sav" : "/rondo-en.sav");
 
     GeargrafxCore* core = new GeargrafxCore();
     core->Init(NULL, GG_PIXEL_RGBA8888);

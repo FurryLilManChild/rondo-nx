@@ -17,6 +17,7 @@ struct XlatEntry
     u16 off;
     u16 len;
     const u8* sig;
+    const u8* mask;   // NULL: every byte must match; else only bytes with 0xFF in the mask
     XlatBlockFn fn;
 };
 

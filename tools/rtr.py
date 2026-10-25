@@ -8,7 +8,9 @@ import sys
 SNAP = 4 + 8 + 0x2000 + 0x400
 
 
-def load(path):
+def load_full(path):
+    """Returns (snapshots, volatile) where volatile maps bank -> 1024-byte bitmap
+    of operand bytes seen being rewritten at run time (version 2 traces)."""
     d = open(path, 'rb').read()
     assert d[:4] == b'RTRC', path
     ver, n = struct.unpack_from('<II', d, 4)
@@ -21,14 +23,33 @@ def load(path):
         ex = d[o + 12 + 0x2000:o + SNAP]
         out.append({'bank': bank, 'pages': pmask, 'hash': h, 'data': data, 'exec': ex})
         o += SNAP
-    return out
+    vol = {}
+    if ver >= 2 and o + 4 <= len(d):
+        nv, = struct.unpack_from('<I', d, o)
+        o += 4
+        for _ in range(nv):
+            b = d[o]
+            vol[b] = d[o + 4:o + 4 + 0x400]
+            o += 4 + 0x400
+    return out, vol
 
 
-def merge(paths):
-    """Merge snapshots from many sessions, keyed by (bank, hash)."""
+def load(path):
+    return load_full(path)[0]
+
+
+def merge_full(paths):
+    """Merge snapshots from many sessions, keyed by (bank, hash), plus volatile bitmaps."""
     m = {}
+    vol = {}
     for p in paths:
-        for s in load(p):
+        snaps, v = load_full(p)
+        for b, bits in v.items():
+            if b in vol:
+                vol[b] = bytes(x | y for x, y in zip(vol[b], bits))
+            else:
+                vol[b] = bits
+        for s in snaps:
             k = (s['bank'], s['hash'])
             if k in m:
                 a = m[k]
@@ -36,7 +57,12 @@ def merge(paths):
                 a['pages'] |= s['pages']
             else:
                 m[k] = dict(s)
-    return list(m.values())
+    return list(m.values()), vol
+
+
+def merge(paths):
+    """Merge snapshots from many sessions, keyed by (bank, hash)."""
+    return merge_full(paths)[0]
 
 
 def popcount(b):

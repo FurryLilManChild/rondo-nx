@@ -105,7 +105,9 @@ void GeargrafxCore::Init(GG_Input_Pump_Fn input_pump_fn, GG_Pixel_Format pixel_f
     m_laseractive = new LaserActive(m_cdrom_media);
     m_media = new Media(m_cdrom_media);
     m_random = new Random();
-    m_random->Seed((u32)time(NULL));
+    // rondo-nx: GG_SEED fixes the power-on randomness (RAM, palette) for side-by-side testing.
+    const char* fixed_seed = getenv("GG_SEED");
+    m_random->Seed(fixed_seed ? (u32)strtoul(fixed_seed, NULL, 10) : (u32)time(NULL));
     m_huc6280 = new HuC6280(m_random);
     m_huc6270_1 = new HuC6270(m_huc6280);
     m_huc6270_2 = new HuC6270(m_huc6280);

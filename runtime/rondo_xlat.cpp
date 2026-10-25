@@ -50,7 +50,16 @@ int RondoXlat::Dispatch(GeargrafxCore* g)
     for (int i = head[off]; i >= 0; i = s_next[i])
     {
         const XlatEntry& e = k_xlat_entries[i];
-        if (memcmp(src + off, e.sig, e.len) == 0)
+        bool match;
+        if (!e.mask)
+            match = memcmp(src + off, e.sig, e.len) == 0;
+        else
+        {
+            match = true;
+            for (int k = 0; k < e.len; k++)
+                if ((src[off + k] & e.mask[k]) != e.sig[k]) { match = false; break; }
+        }
+        if (match)
         {
             s_blocks_run++;
             return e.fn(g, c, (u16)(pc & 0xE000));
