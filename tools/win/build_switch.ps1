@@ -24,7 +24,8 @@ function Step($name, $logName, [scriptblock]$body) {
     Write-Host ''
     Write-Host "== $name  (log: out\logs\$logName)"
     $start = Get-Date
-    & $body *>&1 | Tee-Object -FilePath $log | Select-Object -Last 3 | ForEach-Object { Write-Host "   $_" }
+    if (Test-Path $log) { Remove-Item $log }
+    & $body *>&1 | ForEach-Object { "$_" | Out-File -FilePath $log -Append -Encoding utf8; "$_" } | Select-Object -Last 3 | ForEach-Object { Write-Host "   $_" }
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
         Write-Host "FAILED at: $name. Tell Claude; the log is out\logs\$logName"

@@ -10,7 +10,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
-#include <time.h>
+#include <chrono>
 
 bool g_mcp_stdio_mode = false;
 void rondo_xlat_attach(GeargrafxCore* core, bool enabled);
@@ -124,8 +124,7 @@ int main(int argc, char** argv)
         const int fbs = 2048 * 512 * 4;
         std::vector<u8> fbb(fbs);
         std::vector<s16> sb(48000);
-        struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         for (int f = 0; f < frames; f++)
         {
             for (size_t i = 0; i < evs.size(); i++)
@@ -133,8 +132,7 @@ int main(int argc, char** argv)
             int n = 0;
             core[which]->RunToVBlank(fbb.data(), sb.data(), &n);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         printf("bench %s: %d frames in %.2fs = %.0f fps\n", which ? "translated" : "interpreter", frames, secs, frames / secs);
         return 0;
     }
