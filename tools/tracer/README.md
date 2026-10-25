@@ -21,3 +21,4 @@ Read with `tools/rtr.py summary <files>`.
 
 - The file screen cursor is the flame pair, not the bright text. Cursor index (`$34B8`): 1-3 player slots, 4 NAME ENTRY, 5 NAME CHANGE, 6 FILE DELETE, 7 FILE COPY.
 - Name `X-X!V''Q` adds STAGE SELECT, TECHNIC and SOUND TEST to the file menu (verified).
+- Boss select: game code at bank 6B `$9547` checks pad 1 holds nothing but I (`$2228 | $222A` masked with `$FE` is 0) and pad 2 (`$2229`) is exactly `$8E` (Left + II + Select + Run) when GAME START is confirmed, then uses the alternate stage ID table at `$9581`. Stage 1 normal ID `$42`, boss ID `$C2` (verified headless with Turbo Tap enabled).
