@@ -30,7 +30,7 @@ C_SRC   := $(GG)/dependencies/libchdr/src/libchdr_bitstream.c $(GG)/dependencies
            $(GG)/dependencies/libchdr/src/libchdr_huffman.c $(GG)/dependencies/lzma/src/LzFind.c \
            $(GG)/dependencies/lzma/src/LzmaEnc.c $(GG)/dependencies/lzma/src/LzmaDec.c \
            $(GG)/dependencies/lzma/src/CpuArch.c $(GG)/dependencies/minivorbis/minivorbis.c \
-           $(GG)/dependencies/miniz/miniz.c
+           $(GG)/dependencies/miniz/miniz.c $(ROOT)/app/switch_compat.c
 GEN_SRC := $(sort $(wildcard $(GEN)/xlat_*.cpp))
 
 OBJS := $(addprefix $(BUILD)/core/,$(notdir $(CXX_SRC:.cpp=.o)) $(notdir $(C_SRC:.c=.o))) \
