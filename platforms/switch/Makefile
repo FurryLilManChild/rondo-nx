@@ -24,7 +24,7 @@ CORE := geargrafx_core adpcm audio arcade_card_mapper cdrom_audio cdrom_chd_file
         scsi_controller sf2_mapper trace_logger profiler turbolink vgm_recorder
 
 CXX_SRC := $(addprefix $(GG)/src/,$(addsuffix .cpp,$(CORE))) $(GG)/dependencies/qon/qon.cpp \
-           $(ROOT)/runtime/rondo_xlat.cpp $(ROOT)/app/switch_main.cpp
+           $(ROOT)/runtime/rondo_xlat.cpp $(ROOT)/app/switch_main.cpp $(ROOT)/app/menu.cpp
 C_SRC   := $(GG)/dependencies/libchdr/src/libchdr_bitstream.c $(GG)/dependencies/libchdr/src/libchdr_cdrom.c \
            $(GG)/dependencies/libchdr/src/libchdr_chd.c $(GG)/dependencies/libchdr/src/libchdr_flac.c \
            $(GG)/dependencies/libchdr/src/libchdr_huffman.c $(GG)/dependencies/lzma/src/LzFind.c \

@@ -21,6 +21,8 @@
 #include <vector>
 #include "geargrafx.h"
 #include "rondo_xlat_rt.h"
+#include "menu.h"
+#include <time.h>
 
 bool g_mcp_stdio_mode = false;
 void rondo_xlat_attach(GeargrafxCore* core, bool enabled);
@@ -83,6 +85,7 @@ static s16 s_last_l = 0, s_last_r = 0;
 static bool s_audio_ok = false;
 static int s_free_bufs = k_bufs;
 static bool s_buf_free[k_bufs];
+static int s_volume = 10;                           // 0..10
 
 static void audio_init()
 {
@@ -115,8 +118,8 @@ static void audio_push(const s16* in, int samples)
         double t = s_rs_pos - i;
         s16 l0 = i == 0 ? s_last_l : in[(i - 1) * 2], r0 = i == 0 ? s_last_r : in[(i - 1) * 2 + 1];
         s16 l1 = in[i * 2], r1 = in[i * 2 + 1];
-        s_pending.push_back((s16)(l0 + (l1 - l0) * t));
-        s_pending.push_back((s16)(r0 + (r1 - r0) * t));
+        s_pending.push_back((s16)((l0 + (l1 - l0) * t) * s_volume / 10));
+        s_pending.push_back((s16)((r0 + (r1 - r0) * t) * s_volume / 10));
         s_rs_pos += step;
     }
     s_rs_pos -= frames;
@@ -153,30 +156,128 @@ static void audio_push(const s16* in, int samples)
 
 // ---------------------------------------------------------------- video
 
-static void blit(u32* dst, u32 stride_px, const u32* src, int sw, int sh, float aspect, int out_w, int out_h)
+struct Rect { int x, y, w, h; };
+
+static Rect fit_rect(float aspect, bool stretch, int out_w, int out_h)
 {
+    if (stretch) { Rect r = {0, 0, out_w, out_h}; return r; }
     int dh = out_h;
     int dw = (int)(dh * aspect + 0.5f);
     if (dw > out_w) { dw = out_w; dh = (int)(dw / aspect + 0.5f); }
-    int ox = (out_w - dw) / 2, oy = (out_h - dh) / 2;
+    Rect r = {(out_w - dw) / 2, (out_h - dh) / 2, dw, dh};
+    return r;
+}
+
+static void blit(u32* dst, u32 stride_px, const u32* src, int sw, int sh, Rect r, int out_w, int out_h)
+{
     static std::vector<int> xmap;
-    xmap.resize(dw);
-    for (int x = 0; x < dw; x++) xmap[x] = x * sw / dw;
+    xmap.resize(r.w);
+    for (int x = 0; x < r.w; x++) xmap[x] = x * sw / r.w;
     for (int y = 0; y < out_h; y++)
     {
         u32* row = dst + (size_t)y * stride_px;
-        if (y < oy || y >= oy + dh) { memset(row, 0, out_w * 4); continue; }
-        int sy = (y - oy) * sh / dh;
+        if (y < r.y || y >= r.y + r.h) { memset(row, 0, out_w * 4); continue; }
+        int sy = (y - r.y) * sh / r.h;
         const u32* srow = src + (size_t)sy * sw;
-        if (y > oy && ((y - 1 - oy) * sh / dh) == sy)
+        if (y > r.y && ((y - 1 - r.y) * sh / r.h) == sy)
         {
             memcpy(row, row - stride_px, out_w * 4);  // same source row as the line above
             continue;
         }
-        memset(row, 0, ox * 4);
-        for (int x = 0; x < dw; x++) row[ox + x] = srow[xmap[x]];
-        memset(row + ox + dw, 0, (out_w - ox - dw) * 4);
+        memset(row, 0, r.x * 4);
+        for (int x = 0; x < r.w; x++) row[r.x + x] = srow[xmap[x]];
+        memset(row + r.x + r.w, 0, (out_w - r.x - r.w) * 4);
     }
+}
+
+// Lays the menu overlay (RGBA with alpha, Menu::W x Menu::H) over the picture.
+static void blend_overlay(u32* dst, u32 stride_px, const uint8_t* ov, Rect r)
+{
+    for (int y = 0; y < r.h; y++)
+    {
+        const uint8_t* srow = ov + (size_t)(y * Menu::H / r.h) * Menu::W * 4;
+        uint8_t* drow = (uint8_t*)(dst + (size_t)(r.y + y) * stride_px + r.x);
+        for (int x = 0; x < r.w; x++)
+        {
+            const uint8_t* s = srow + (x * Menu::W / r.w) * 4;
+            unsigned a = s[3];
+            if (!a) continue;
+            uint8_t* d = drow + x * 4;
+            d[0] = (uint8_t)((s[0] * a + d[0] * (255 - a)) / 255);
+            d[1] = (uint8_t)((s[1] * a + d[1] * (255 - a)) / 255);
+            d[2] = (uint8_t)((s[2] * a + d[2] * (255 - a)) / 255);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- menu host (Switch)
+
+static std::string s_saves;
+static bool s_japanese = false;
+
+static std::string state_path(int slot)
+{
+    char name[48];
+    snprintf(name, sizeof(name), "/%s.state%d", s_japanese ? "rondo" : "rondo-en", slot);
+    return s_saves + name;
+}
+
+// Bindings use the bit index of the HidNpadButton.
+static const char* npad_name(int bit)
+{
+    static const char* names[] = {"A", "B", "X", "Y", "L3", "R3", "L", "R", "ZL", "ZR", "+", "-",
+                                  "D-Left", "D-Up", "D-Right", "D-Down"};
+    return (bit >= 0 && bit < 16) ? names[bit] : "?";
+}
+
+struct SwitchHost : public MenuHost
+{
+    bool HasKeyboard() { return false; }
+    bool HasWindow() { return false; }
+    std::string KeyName(int) { return "-"; }
+    std::string PadName(int code) { return npad_name(code); }
+    std::string SlotInfo(int slot)
+    {
+        struct stat st;
+        if (stat(state_path(slot).c_str(), &st) != 0) return "Empty";
+        time_t t = st.st_mtime;
+        struct tm* lt = localtime(&t);
+        char buf[32];
+        strftime(buf, sizeof(buf), "%m/%d %H:%M", lt);
+        return buf;
+    }
+    void DefaultBindings(MenuSettings& s)
+    {
+        s.pad[BIND_UP] = 13;        // D-Up
+        s.pad[BIND_DOWN] = 15;      // D-Down
+        s.pad[BIND_LEFT] = 12;      // D-Left
+        s.pad[BIND_RIGHT] = 14;     // D-Right
+        s.pad[BIND_ATTACK] = 3;     // Y
+        s.pad[BIND_JUMP] = 1;       // B
+        s.pad[BIND_SUBWEAPON] = 2;  // X
+        s.pad[BIND_RUN] = 10;       // +
+        s.pad[BIND_SELECT] = 11;    // -
+    }
+};
+
+static std::string read_text(const std::string& path)
+{
+    std::string out;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return out;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+    fclose(f);
+    return out;
+}
+
+static void write_text(const std::string& path, const std::string& text)
+{
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return;
+    fwrite(text.data(), 1, text.size(), f);
+    fclose(f);
 }
 
 // ---------------------------------------------------------------- main
@@ -185,36 +286,52 @@ int main(int argc, char** argv)
 {
     (void)argc; (void)argv;
     std::string ini = std::string(k_dir) + "/rondo-nx.ini";
-    std::string cue, bios = std::string(k_dir) + "/syscard3.pce";
+    std::string cue_override, bios = std::string(k_dir) + "/syscard3.pce";
     bool xlat = true;
-    bool japanese = false;
-    FILE* f = fopen(ini.c_str(), "r");
-    if (f)
+    int ini_language = 0;
+    std::string ini_text = read_text(ini);
     {
-        char line[1024];
-        while (fgets(line, sizeof(line), f))
+        size_t pos = 0;
+        while (pos < ini_text.size())
         {
-            std::string l = line;
-            while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
-            if (l.compare(0, 4, "cue=") == 0) cue = l.substr(4);
+            size_t end = ini_text.find('\n', pos);
+            if (end == std::string::npos) end = ini_text.size();
+            std::string l = ini_text.substr(pos, end - pos);
+            pos = end + 1;
+            while (!l.empty() && (l[l.size() - 1] == '\r' || l[l.size() - 1] == ' ')) l.erase(l.size() - 1);
+            if (l.compare(0, 4, "cue=") == 0) cue_override = l.substr(4);
             else if (l.compare(0, 5, "bios=") == 0) bios = l.substr(5);
             else if (l == "translated=0") xlat = false;
-            else if (l == "language=japanese") japanese = true;
+            else if (l == "language=japanese") ini_language = 1;
         }
-        fclose(f);
     }
-    if (cue.empty()) cue = find_cue(std::string(k_dir) + (japanese ? "/game-jp" : "/game"));
+
+    s_saves = std::string(k_dir) + "/saves";
+    mkdir(s_saves.c_str(), 0777);
+    std::string settings_path = s_saves + "/settings.ini";
+
+    SwitchHost host;
+    MenuSettings ms;
+    host.DefaultBindings(ms);
+    ms.language = ini_language;
+    std::string saved = read_text(settings_path);
+    if (!saved.empty()) ms.Parse(saved);
+    Menu menu(&host, &ms);
+    s_volume = ms.volume;
+
+    std::string cue_for[2] = { find_cue(std::string(k_dir) + "/game"), find_cue(std::string(k_dir) + "/game-jp") };
+    if (!cue_override.empty()) cue_for[ms.language] = cue_override;
+    if (cue_for[ms.language].empty() && !cue_for[1 - ms.language].empty()) ms.language = 1 - ms.language;
+    s_japanese = (ms.language == 1);
+    std::string cue = cue_for[ms.language];
     if (cue.empty() || !exists(cue))
     {
-        show_error(japanese ? "Japanese disc not found. Put its .cue and all .bin tracks in\n  sdmc:/switch/rondo-nx/game-jp/"
-                            : "Game not found. Put the English .cue and all .bin tracks in\n  sdmc:/switch/rondo-nx/game/");
+        show_error("Game not found. Put the English .cue and all .bin tracks in\n  sdmc:/switch/rondo-nx/game/");
         return 0;
     }
     if (!exists(bios)) { show_error("System Card not found. Copy syscard3.pce to\n  sdmc:/switch/rondo-nx/syscard3.pce"); return 0; }
 
-    std::string saves = std::string(k_dir) + "/saves";
-    mkdir(saves.c_str(), 0777);
-    std::string bram = saves + (japanese ? "/rondo.sav" : "/rondo-en.sav");
+    std::string bram = s_saves + (s_japanese ? "/rondo.sav" : "/rondo-en.sav");
 
     GeargrafxCore* core = new GeargrafxCore();
     core->Init(NULL, GG_PIXEL_RGBA8888);
@@ -245,30 +362,15 @@ int main(int argc, char** argv)
 
     std::vector<u8> frame(2048 * 512 * 4);
     std::vector<s16> snd(GG_AUDIO_BUFFER_SIZE * 4);
+    std::vector<uint8_t> overlay(Menu::W * Menu::H * 4);
     u16 sent = 0;
     int boot = 0;
     u64 frames = 0;
+    bool running = true;
 
-    while (appletMainLoop())
+    static const GG_Keys keys[] = {GG_KEY_I, GG_KEY_II, GG_KEY_SELECT, GG_KEY_RUN, GG_KEY_UP, GG_KEY_RIGHT, GG_KEY_DOWN, GG_KEY_LEFT};
+    auto send = [&](u16 want)
     {
-        padUpdate(&pad);
-        u64 b = padGetButtons(&pad);
-        if ((b & HidNpadButton_Plus) && (b & HidNpadButton_Minus))
-            break;  // hold + and - together to quit
-
-        u16 want = 0;
-        if (b & HidNpadButton_AnyUp) want |= GG_KEY_UP;
-        if (b & HidNpadButton_AnyDown) want |= GG_KEY_DOWN;
-        if (b & HidNpadButton_AnyLeft) want |= GG_KEY_LEFT;
-        if (b & HidNpadButton_AnyRight) want |= GG_KEY_RIGHT;
-        if (b & HidNpadButton_Y) want |= GG_KEY_I;             // attack
-        if (b & HidNpadButton_B) want |= GG_KEY_II;            // jump
-        if (b & HidNpadButton_X) want |= GG_KEY_UP | GG_KEY_I; // subweapon
-        if (b & HidNpadButton_Plus) want |= GG_KEY_RUN;
-        if (b & HidNpadButton_Minus) want |= GG_KEY_SELECT;
-        if (boot < 200) { boot++; if (boot >= 90 && boot < 96) want |= GG_KEY_RUN; }
-
-        static const GG_Keys keys[] = {GG_KEY_I, GG_KEY_II, GG_KEY_SELECT, GG_KEY_RUN, GG_KEY_UP, GG_KEY_RIGHT, GG_KEY_DOWN, GG_KEY_LEFT};
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
         {
             u16 k = (u16)keys[i];
@@ -276,17 +378,121 @@ int main(int argc, char** argv)
             if (!(want & k) && (sent & k)) core->KeyReleased(GG_CONTROLLER_1, keys[i]);
         }
         sent = want;
+    };
+    auto save_settings = [&]() { write_text(settings_path, ms.Serialize()); };
 
-        int count = 0;
-        core->RunToVBlank(frame.data(), snd.data(), &count);
-        audio_push(snd.data(), count);
+    auto handle = [&](MenuResult r)
+    {
+        switch (r)
+        {
+        case MR_RESET: core->ResetMedia(false); boot = 0; menu.Toast("Reset"); break;
+        case MR_SAVE_STATE:
+        {
+            char t[40];
+            bool ok = core->SaveState(state_path(ms.slot).c_str());
+            snprintf(t, sizeof(t), ok ? "Saved to slot %d" : "Couldn't save slot %d", ms.slot);
+            menu.Toast(t);
+            break;
+        }
+        case MR_LOAD_STATE:
+        {
+            char t[40];
+            bool ok = core->LoadState(state_path(ms.slot).c_str());
+            snprintf(t, sizeof(t), ok ? "Loaded slot %d" : "Couldn't load slot %d", ms.slot);
+            menu.Toast(t);
+            break;
+        }
+        case MR_LANGUAGE:
+            if (cue_for[ms.language].empty())
+            {
+                ms.language = 1 - ms.language;
+                menu.Toast(ms.language ? "No English disc in game/" : "No Japanese disc in game-jp/");
+                break;
+            }
+            core->SaveRam(bram.c_str(), true);
+            s_japanese = (ms.language == 1);
+            bram = s_saves + (s_japanese ? "/rondo.sav" : "/rondo-en.sav");
+            if (core->LoadMedia(cue_for[ms.language].c_str()))
+            {
+                if (exists(bram)) core->LoadRam(bram.c_str(), true);
+                core->ResetMedia(true);
+                boot = 0;
+                menu.Toast(s_japanese ? "Japanese" : "English");
+            }
+            break;
+        case MR_VOLUME: s_volume = ms.volume; break;
+        case MR_QUIT: running = false; break;
+        default: break;
+        }
+        if (r != MR_NONE) save_settings();
+    };
+
+    while (running && appletMainLoop())
+    {
+        padUpdate(&pad);
+        u64 b = padGetButtons(&pad);
+        u64 down = padGetButtonsDown(&pad);
+
+        if (menu.IsOpen())
+        {
+            if (menu.IsCapturing())
+            {
+                for (int bit = 0; bit < 16; bit++)
+                    if (down & BITL(bit)) { handle(menu.Captured(bit)); break; }
+            }
+            else
+            {
+                if (down & (HidNpadButton_Up | HidNpadButton_StickLUp)) handle(menu.Nav(NAV_UP));
+                if (down & (HidNpadButton_Down | HidNpadButton_StickLDown)) handle(menu.Nav(NAV_DOWN));
+                if (down & (HidNpadButton_Left | HidNpadButton_StickLLeft)) handle(menu.Nav(NAV_LEFT));
+                if (down & (HidNpadButton_Right | HidNpadButton_StickLRight)) handle(menu.Nav(NAV_RIGHT));
+                if (down & HidNpadButton_A) handle(menu.Nav(NAV_OK));
+                if (down & HidNpadButton_B) handle(menu.Nav(NAV_BACK));
+                if (down & HidNpadButton_StickR) handle(menu.Close());
+            }
+        }
+        else
+        {
+            // Open the menu: ZL + ZR together, or click the right stick.
+            bool zlzr = (b & HidNpadButton_ZL) && (b & HidNpadButton_ZR) && (down & (HidNpadButton_ZL | HidNpadButton_ZR));
+            if (zlzr || (down & HidNpadButton_StickR))
+            {
+                menu.Open();
+                send(0);
+            }
+        }
+
+        if (!menu.IsOpen())
+        {
+            u16 want = 0;
+            static const u16 action_key[BIND_COUNT] = {GG_KEY_UP, GG_KEY_DOWN, GG_KEY_LEFT, GG_KEY_RIGHT,
+                                                       GG_KEY_I, GG_KEY_II, (u16)(GG_KEY_UP | GG_KEY_I), GG_KEY_RUN, GG_KEY_SELECT};
+            for (int a = 0; a < BIND_COUNT; a++)
+                if (ms.pad[a] >= 0 && (b & BITL(ms.pad[a]))) want |= action_key[a];
+            if (b & HidNpadButton_StickLUp) want |= GG_KEY_UP;
+            if (b & HidNpadButton_StickLDown) want |= GG_KEY_DOWN;
+            if (b & HidNpadButton_StickLLeft) want |= GG_KEY_LEFT;
+            if (b & HidNpadButton_StickLRight) want |= GG_KEY_RIGHT;
+            if (boot < 200) { boot++; if (boot >= 90 && boot < 96) want |= GG_KEY_RUN; }
+            send(want);
+
+            int count = 0;
+            core->RunToVBlank(frame.data(), snd.data(), &count);
+            audio_push(snd.data(), count);
+        }
+        menu.Tick();
 
         GG_Runtime_Info ri;
         core->GetRuntimeInfo(ri);
+        Rect r = fit_rect(ri.aspect_ratio > 0 ? ri.aspect_ratio : 4.0f / 3.0f, ms.aspect == 1, 1280, 720);
         u32 stride;
         u32* px = (u32*)framebufferBegin(&fb, &stride);
-        blit(px, stride / 4, (const u32*)frame.data(), ri.screen_width, ri.screen_height,
-             ri.aspect_ratio > 0 ? ri.aspect_ratio : 4.0f / 3.0f, 1280, 720);
+        blit(px, stride / 4, (const u32*)frame.data(), ri.screen_width, ri.screen_height, r, 1280, 720);
+        if (menu.Visible())
+        {
+            menu.Draw(overlay.data());
+            blend_overlay(px, stride / 4, overlay.data(), r);
+        }
         framebufferEnd(&fb);
 
         if (++frames % 1800 == 0)
@@ -294,6 +500,7 @@ int main(int argc, char** argv)
     }
 
     core->SaveRam(bram.c_str(), true);
+    save_settings();
     appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
     framebufferClose(&fb);
     if (s_audio_ok) { audoutStopAudioOut(); audoutExit(); }

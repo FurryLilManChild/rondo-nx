@@ -49,22 +49,34 @@ It translates the game code, compiles `platforms\switch\rondo-nx.nro` through de
 - `switch/rondo-nx/game/` (the English `.cue` and all `.bin` tracks)
 - `switch/rondo-nx/game-jp/` (only with `-WithJapanese`; pick it with `language=japanese` in `switch/rondo-nx/rondo-nx.ini`)
 
-Launch from the homebrew menu opened with a title override (hold R while starting a game), so the app gets full memory and the CPU boost clock. Switch controls: Y attack, B jump, X subweapon, + Run, - Select, D-pad or left stick to move, hold + and - together to quit.
+Launch from the homebrew menu opened with a title override (hold R while starting a game), so the app gets full memory and the CPU boost clock. Switch controls: Y attack, B jump, X subweapon, + Run, - Select, D-pad or left stick to move. ZL + ZR together (or clicking the right stick) opens the menu; A selects, B goes back.
 
 ## Controls
 
-| Action | Keyboard | Gamepad |
-| --- | --- | --- |
-| Move | Arrow keys | D-pad or left stick |
-| Attack (I) | X | West (Xbox X) |
-| Jump (II) | Z | South (Xbox A) |
-| Subweapon (Up + I) | Up + X | North (Xbox Y) |
-| Run (start/pause) | Enter | Start |
-| Select | Right Shift or Backspace | Back/View |
+Defaults (all rebindable in the menu under Controls):
 
-Hotkeys: F5 save state, F7 load state, F11 or Alt+Enter fullscreen, F2 smooth/sharp pixels, F9 switch between translated code and the interpreter, Tab fast-forward, P pause, Esc quit. Saves (backup RAM) go to `saves\rondo.sav` next to the exe.
+| Action | Keyboard | Gamepad | Switch |
+| --- | --- | --- | --- |
+| Move | Arrow keys | D-pad or left stick | D-pad or left stick |
+| Attack (I) | X | X (west) | Y |
+| Jump (II) | Z | A (south) | B |
+| Subweapon (Up + I) | C | Y (north) | X |
+| Run (start/pause) | Enter | Start | + |
+| Select | Right Shift | Back | - |
 
-The window title shows the frame rate and the share of instructions running as translated code.
+## Menu
+
+Esc or F1 (keyboard), R3 or Guide (gamepad), ZL + ZR or R3 (Switch). The game pauses while it is open.
+
+- Resume, Reset
+- Save state / Load state: 5 slots per language, Left/Right picks the slot, the save time is shown
+- Controls: rebind keyboard and gamepad (Switch: controller); a key already in use swaps over; Reset to defaults
+- Options: Language (English/Japanese, switches discs on the spot), Volume, Aspect (4:3 or stretch), and on PC
+  Pixels (sharp/smooth), Fullscreen, Window size
+- Quit
+
+Menu settings and bindings are kept in `saves/settings.ini`. PC hotkeys: F5 save to the current slot, F7 load it,
+F11 or Alt+Enter fullscreen, F9 switch translated code / interpreter, Tab fast-forward.
 
 ## License
 

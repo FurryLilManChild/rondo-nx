@@ -86,7 +86,7 @@ else()
   target_compile_options(rondo_xlat PRIVATE -w -O1)
 endif()
 
-add_executable(rondo-nx WIN32 app/main.cpp)
+add_executable(rondo-nx WIN32 app/main.cpp app/menu.cpp)
 target_link_libraries(rondo-nx PRIVATE rondo_xlat SDL3::SDL3)
 if(MINGW)
   target_link_options(rondo-nx PRIVATE -static-libgcc -static-libstdc++)
