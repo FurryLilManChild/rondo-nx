@@ -22,3 +22,5 @@ Read with `tools/rtr.py summary <files>`.
 - The file screen cursor is the flame pair, not the bright text. Cursor index (`$34B8`): 1-3 player slots, 4 NAME ENTRY, 5 NAME CHANGE, 6 FILE DELETE, 7 FILE COPY.
 - Name `X-X!V''Q` adds STAGE SELECT, TECHNIC and SOUND TEST to the file menu (verified).
 - Boss select: game code at bank 6B `$9547` checks pad 1 holds nothing but I (`$2228 | $222A` masked with `$FE` is 0) and pad 2 (`$2229`) is exactly `$8E` (Left + II + Select + Run) when GAME START is confirmed, then uses the alternate stage ID table at `$9581`. Stage 1 normal ID `$42`, boss ID `$C2` (verified headless with Turbo Tap enabled).
+- Forcing a stage: after confirming GAME START, write the stage ID to zero page `$81` (`$2081`, WRAM bank F8 offset `$81`) every frame for ~360 frames. Normal IDs (table `$9574`): 40 42 44 45 46 47 48 49 4A 4B 4C 4E 50. Boss IDs (table `$9581`): C0 C2 C4 C5 C6 C7 C8 C9 CA CA CC CE 50. The map cursor (`$2577`) and the file's stored stage cannot simply be poked.
+- `tools/coverage.py old.rtr ... -- new.rtr ...` counts distinct executed instructions (bank, offset, bytes) a set of traces adds.

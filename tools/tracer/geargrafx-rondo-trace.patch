@@ -22,10 +22,10 @@ index 0000000..995e18b
 +	mkdir -p obj
 diff --git a/platforms/headless/main.cpp b/platforms/headless/main.cpp
 new file mode 100644
-index 0000000..2b83978
+index 0000000..fa8db7c
 --- /dev/null
 +++ b/platforms/headless/main.cpp
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,126 @@
 +// Headless runner for testing the rondo tracer.
 +// usage: headless <cue> <bios> <frames> <script> <outdir>
 +// script lines: "<frame> press|release <KEY>", "<frame> shot", "<frame> cheat <code>",
@@ -33,6 +33,7 @@ index 0000000..2b83978
 +#include "geargrafx.h"
 +#include "rondo_trace.h"
 +#include "memory_inline.h"
++#include "input.h"
 +bool g_mcp_stdio_mode = false;
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -89,6 +90,28 @@ index 0000000..2b83978
 +            const std::string& c = evs[i].cmd;
 +            if (c == "press") core->KeyPressed(GG_CONTROLLER_1, key_of(evs[i].arg));
 +            else if (c == "release") core->KeyReleased(GG_CONTROLLER_1, key_of(evs[i].arg));
++            else if (c == "press2") core->KeyPressed(GG_CONTROLLER_2, key_of(evs[i].arg));
++            else if (c == "release2") core->KeyReleased(GG_CONTROLLER_2, key_of(evs[i].arg));
++            else if (c == "turbotap") core->GetInput()->EnableTurboTap(true);
++            else if (c == "pokel")
++            {
++                unsigned a; char hex[300]; sscanf(evs[i].arg.c_str(), "%x %299s", &a, hex);
++                for (unsigned k = 0; hex[k*2] && hex[k*2+1]; k++) { unsigned v; sscanf(hex + k*2, "%2x", &v); core->GetMemory()->Write((u16)(a + k), (u8)v); }
++            }
++            else if (c == "peekl")
++            {
++                unsigned a, n; sscanf(evs[i].arg.c_str(), "%x %u", &a, &n);
++                printf("f%d peekl %04X:", f, a);
++                for (unsigned k = 0; k < n; k++) printf(" %02X", core->GetMemory()->Read((u16)(a + k)));
++                printf("\n");
++            }
++            else if (c == "dumpl")
++            {
++                FILE* df = fopen(evs[i].arg.c_str(), "wb");
++                for (unsigned a = 0; a < 0x10000; a++) { u8 v = core->GetMemory()->Read((u16)a); fputc(v, df); }
++                for (int k = 0; k < 8; k++) fputc(core->GetMemory()->GetMpr(k), df);
++                fclose(df);
++            }
 +            else if (c == "cheat") core->SetCheat(evs[i].arg.c_str());
 +            else if (c == "save") core->SaveState(evs[i].arg.c_str());
 +            else if (c == "load") core->LoadState(evs[i].arg.c_str());
