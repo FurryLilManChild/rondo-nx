@@ -1,0 +1,587 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#ifndef HUC6260_INLINE_H
+#define HUC6260_INLINE_H
+
+#include "huc6260.h"
+#include "huc6202.h"
+#include "huc6280.h"
+#include "trace_logger.h"
+#include "laseractive.h"
+
+INLINE void HuC6260::TraceVceEvent(u8 event)
+{
+    if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEventEnabled(TRACE_VCE, event))
+        LogVceEvent(event);
+}
+
+template <bool is_sgx, bool is_laseractive>
+INLINE bool HuC6260::Clock(u32 cycles)
+{
+    bool frame_ready = false;
+
+    while (cycles > 0)
+    {
+        u32 cycles_to_next_pixel;
+        if (m_clock_divider == 2)
+            cycles_to_next_pixel = 2 - (m_hpos & 1);
+        else if (m_clock_divider == 4)
+            cycles_to_next_pixel = 4 - (m_hpos & 3);
+        else
+            cycles_to_next_pixel = 3 - (m_hpos % 3);
+
+        u32 step = cycles_to_next_pixel;
+        if (step > cycles)
+            step = cycles;
+
+        u32 cycles_to_line_end = HUC6260_LINE_LENGTH - m_hpos;
+        if (cycles_to_line_end > cycles)
+            cycles_to_line_end = cycles;
+
+        u32 cycles_to_hsync = (m_hpos < HUC6260_HSYNC_END_HPOS)
+            ? (HUC6260_HSYNC_END_HPOS - m_hpos)
+            : (HUC6260_LINE_LENGTH - m_hpos + HUC6260_HSYNC_END_HPOS);
+        if (cycles_to_hsync > cycles)
+            cycles_to_hsync = cycles;
+
+        if (cycles_to_line_end < step)
+            step = cycles_to_line_end;
+        if (cycles_to_hsync < step)
+            step = cycles_to_hsync;
+
+        bool pixel_clock = (step == cycles_to_next_pixel);
+        m_hpos += step;
+        cycles -= step;
+
+        if (pixel_clock)
+        {
+            m_pixel_x++;
+            if (m_pixel_x == k_huc6260_full_line_width[m_speed])
+                m_pixel_x = 0;
+
+            if (is_sgx)
+            {
+                u16 pixel_1, pixel_2;
+                m_huc6202->ClockSGX(&pixel_1, &pixel_2);
+                if (m_active_line && (m_pixel_x >= m_screen_start_x) && (m_pixel_x < m_screen_end_x))
+                {
+                    u16 win_1_width = m_huc6202->GetWindow1Width();
+                    u16 win_2_width = m_huc6202->GetWindow2Width();
+                    int in_win_1 = (win_1_width >= 0x40) && (m_pixel_x < win_1_width);
+                    int in_win_2 = ((win_2_width >= 0x40) && (m_pixel_x < win_2_width)) << 1;
+                    u16 win_mode = (in_win_1 | in_win_2) << 14;
+                    bool pixel_1_black = (pixel_1 & HUC6270_PIXEL_BLACK) != 0;
+                    bool pixel_2_black = (pixel_2 & HUC6270_PIXEL_BLACK) != 0;
+                    u16 is_pixel_1_transparent = (!pixel_1_black && ((pixel_1 & 0x0F) == 0)) ? 0x2000 : 0;
+                    u16 is_pixel_2_transparent = (!pixel_2_black && ((pixel_2 & 0x0F) == 0)) ? 0x2000 : 0;
+                    u16 is_vdc_1_sprite = (pixel_1 & 0x100) << 4;
+                    u16 is_vdc_2_sprite = (pixel_2 & 0x100) << 4;
+
+                    m_vce_buffer_1[m_pixel_index] = (pixel_1_black ? HUC6270_PIXEL_BLACK : m_color_table[pixel_1]) | is_pixel_1_transparent | is_vdc_1_sprite | win_mode;
+                    m_vce_buffer_2[m_pixel_index] = (pixel_2_black ? HUC6270_PIXEL_BLACK : m_color_table[pixel_2]) | is_pixel_2_transparent | is_vdc_2_sprite;
+
+                    m_pixel_index++;
+                }
+            }
+            else
+            {
+                u16 pixel = m_huc6202->Clock();
+
+                if (!is_laseractive)
+                {
+                    if (m_active_line && (m_pixel_x >= m_screen_start_x) && (m_pixel_x < m_screen_end_x))
+                    {
+                        if (pixel & HUC6270_PIXEL_BLACK)
+                            m_vce_buffer_1[m_pixel_index] = HUC6270_PIXEL_BLACK;
+                        else
+                            m_vce_buffer_1[m_pixel_index] = m_color_table[pixel];
+                        m_pixel_index++;
+                    }
+                }
+                else
+                {
+                    if (m_pixel_x == 1)
+                    {
+                        if (m_vpos == HUC6260_LINES - 3)
+                            m_laseractive->BeginVideoFrame();
+                        m_laseractive->CaptureVideoLineState(m_laseractive_line_state + (m_vpos * 8));
+                        m_line_speed[m_vpos] = m_speed;
+                    }
+
+                    int index = (m_vpos * 683) + m_pixel_x;
+                    bool black = (pixel & HUC6270_PIXEL_BLACK) != 0;
+                    m_vce_buffer_1[index] = black ? HUC6270_PIXEL_BLACK : m_color_table[pixel & 0x1FF];
+
+                    if (black || pixel == 0x100)
+                        m_laseractive_classification[index] = 3;
+                    else if (pixel & 0x100)
+                        m_laseractive_classification[index] = 0;
+                    else if ((pixel & 0x0F) == 0)
+                        m_laseractive_classification[index] = 2;
+                    else
+                        m_laseractive_classification[index] = 1;
+                }
+            }
+        }
+
+        // End of line
+        if (m_hpos >= HUC6260_LINE_LENGTH)
+        {
+            if (is_laseractive && IsValidPointer(m_frame_buffer))
+                RenderLaserActiveLine(m_vpos);
+
+            m_hpos = 0;
+            m_pixel_x = 0;
+        }
+
+        if (m_hpos == HUC6260_HSYNC_END_HPOS)
+        {
+            m_hsync = true;
+            m_huc6202->SetHSyncHigh();
+
+            // Start of vertical sync
+            if (m_vpos == (k_huc6260_total_lines[m_blur] - 4))
+            {
+                m_vsync = false;
+                m_huc6202->SetVSyncLow();
+
+                TraceVceEvent(TRACE_VCE_VSYNC_START);
+            }
+            // End of vertical sync
+            else if (m_vpos == (k_huc6260_total_lines[m_blur] - 1))
+            {
+                if (is_laseractive && !m_blur && IsValidPointer(m_frame_buffer) && m_laseractive_scanline_start <= 2)
+                {
+                    for (int x = 0; x < 683; x++)
+                    {
+                        m_vce_buffer_1[262 * 683 + x] = HUC6270_PIXEL_BLACK;
+                        m_laseractive_classification[262 * 683 + x] = 3;
+                    }
+
+                    m_line_speed[262] = m_speed;
+                    m_laseractive->CaptureVideoLineState(m_laseractive_line_state + 262 * 8);
+
+                    RenderLaserActiveLine(262);
+                }
+                m_vsync = true;
+                m_pixel_index = 0;
+                if (is_laseractive)
+                    frame_ready = true;
+
+                TraceVceEvent(TRACE_VCE_VSYNC_END);
+            }
+
+            if (!is_laseractive && m_vpos >= 14 && m_vpos < 256)
+                m_line_speed[m_vpos - 14] = m_speed;
+            m_vpos++;
+            if (m_vpos == k_huc6260_total_lines[m_blur])
+                m_vpos = 0;
+
+            // End of active display
+            if (!is_laseractive && (m_vpos == 256))
+            {
+                RenderFrame<is_sgx>();
+                m_pixel_index = 0;
+                frame_ready = true;
+            }
+
+            m_active_line = (m_vpos >= m_screen_start_y) && (m_vpos < m_screen_end_y);
+
+            if (!is_laseractive && m_auto_crop && m_active_line)
+                UpdateCropBounds();
+        }
+        else if (m_hpos == HUC6260_HSYNC_START_HPOS)
+        {
+            m_hsync = false;
+        }
+    }
+
+    return frame_ready;
+}
+
+template <bool is_sgx>
+INLINE void HuC6260::RenderFrame()
+{
+    bool multiple_speeds = m_multiple_speeds;
+
+    if (IsValidPointer(m_frame_buffer))
+    {
+        if (is_sgx)
+        {
+            if (m_pixel_format == GG_PIXEL_RGB565)
+                RenderFrameTemplate<true, 2>();
+            else
+                RenderFrameTemplate<true, 4>();
+        }
+        else
+        {
+            if (m_pixel_format == GG_PIXEL_RGB565)
+                RenderFrameTemplate<false, 2>();
+            else
+                RenderFrameTemplate<false, 4>();
+        }
+
+        if (multiple_speeds)
+            AdjustForMultipleDividers();
+
+        if (m_auto_crop)
+            CropFrame(multiple_speeds);
+
+        if (m_lowpass_enabled)
+        {
+            if (m_pixel_format == GG_PIXEL_RGB565)
+                ApplyLowPassFilter<2>();
+            else
+                ApplyLowPassFilter<4>();
+        }
+    }
+
+    m_scaled_width = multiple_speeds;
+    m_multiple_speeds = false;
+}
+
+INLINE void HuC6260::UpdateCropBounds()
+{
+    s32 start, end;
+
+    if (!m_huc6202->GetDisplayRange(&start, &end))
+        return;
+
+    m_crop_min = MIN(m_crop_min, (start - m_screen_start_x) * m_clock_divider);
+    m_crop_max = MAX(m_crop_max, (end - m_screen_start_x) * m_clock_divider);
+}
+
+INLINE void HuC6260::RenderLaserActiveLine(int source_y)
+{
+    int y = (source_y + 3) % HUC6260_LINES;
+
+    if (y < m_laseractive_scanline_start || y > m_laseractive_scanline_end)
+        return;
+
+    int speed = CLAMP(m_line_speed[source_y], 0, 3);
+    int divider = (speed == 0) ? 4 : ((speed == 1) ? 3 : 2);
+    int full_master_width = k_huc6260_full_line_width[speed] * divider;
+    int master_crop = MAX((full_master_width - HUC6260_LASERACTIVE_WIDTH) / 2, 0);
+    u8* palette888 = &m_rgba888_palette[m_palette][0][0];
+
+    for (int x = 0; x < HUC6260_LASERACTIVE_WIDTH; x++)
+    {
+        int source_x = (x + master_crop) / divider;
+        source_x = CLAMP(source_x, 0, k_huc6260_full_line_width[speed] - 1);
+        int source_index = source_y * 683 + source_x;
+        u16 color = m_vce_buffer_1[source_index];
+        m_laseractive_output_classification[x] = m_laseractive_classification[source_index];
+
+        u8* destination = m_scale_buffer + x * 4;
+
+        if (color & HUC6270_PIXEL_BLACK)
+        {
+            destination[0] = 0;
+            destination[1] = 0;
+            destination[2] = 0;
+            destination[3] = 0xFF;
+        }
+        else
+            memcpy(destination, palette888 + ((color & 0x1FF) * 4), 4);
+    }
+
+    if (m_lowpass_enabled)
+        ApplyLowPassFilter<4>(m_scale_buffer, HUC6260_LASERACTIVE_WIDTH, 1, speed);
+
+    const u8* line_state = m_laseractive_line_state + (source_y * 8);
+    int bytes_per_pixel = (m_pixel_format == GG_PIXEL_RGB565) ? 2 : 4;
+    u8* output = m_frame_buffer + ((y - m_laseractive_scanline_start) * m_laseractive_width * bytes_per_pixel);
+    u8* composite = m_laseractive_width == HUC6260_LASERACTIVE_WIDTH ? output : m_scale_buffer + HUC6260_LASERACTIVE_WIDTH * 4;
+    m_laseractive->ComposeLine((u32)y, m_scale_buffer, m_laseractive_output_classification, line_state, composite, m_pixel_format);
+
+    if (composite != output)
+    {
+        int crop = m_laseractive_pixel_start * HUC6260_LASERACTIVE_WIDTH_SCALE;
+        memcpy(output, composite + crop * bytes_per_pixel, m_laseractive_width * bytes_per_pixel);
+    }
+}
+
+template <bool is_sgx, int bytes_per_pixel>
+void HuC6260::RenderFrameTemplate()
+{
+    u8* palette888 = &m_rgba888_palette[m_palette][0][0];
+    u16* palette565 = &m_rgb565_palette[m_palette][0];
+    int frame_buffer_index = 0;
+
+    if (is_sgx)
+    {
+        const u8* source_selection = m_huc6202->GetSourceSelection();
+
+        for (int i = 0; i < m_pixel_index; i++)
+        {
+            u16 pixel_1 = m_vce_buffer_1[i];
+            u16 pixel_2 = m_vce_buffer_2[i];
+            int win_mode = (pixel_1 >> 14) & 0x0003;
+            int classification = ((pixel_1 >> 12) & 0x03) | ((pixel_2 >> 10) & 0x0C);
+            u8 source = source_selection[(win_mode * 16) | classification];
+            u16 final_pixel = 0x100;
+
+            if (source == HuC6202::HuC6202_SOURCE_VDC_1)
+                final_pixel = pixel_1;
+            else if (source == HuC6202::HuC6202_SOURCE_VDC_2)
+                final_pixel = pixel_2;
+
+            if (final_pixel & HUC6270_PIXEL_BLACK)
+            {
+                if (bytes_per_pixel == 2)
+                {
+                    u16* dst = reinterpret_cast<u16*>(m_frame_buffer + frame_buffer_index);
+                    *dst = 0;
+                }
+                else
+                {
+                    u8* dst = m_frame_buffer + frame_buffer_index;
+                    dst[0] = 0;
+                    dst[1] = 0;
+                    dst[2] = 0;
+                    dst[3] = 255;
+                }
+            }
+            else if (bytes_per_pixel == 2)
+            {
+                u16* dst = reinterpret_cast<u16*>(m_frame_buffer + frame_buffer_index);
+                *dst = palette565[final_pixel & 0x1FF];
+            }
+            else
+            {
+                memcpy(m_frame_buffer + frame_buffer_index, palette888 + ((final_pixel & 0x1FF) * 4), 4);
+            }
+            frame_buffer_index += bytes_per_pixel;
+        }
+    }
+    else
+    {
+        for (int i = 0; i < m_pixel_index; i++)
+        {
+            u16 final_pixel = m_vce_buffer_1[i];
+            if (final_pixel & HUC6270_PIXEL_BLACK)
+            {
+                if (bytes_per_pixel == 2)
+                {
+                    u16* dst = reinterpret_cast<u16*>(m_frame_buffer + frame_buffer_index);
+                    *dst = 0;
+                }
+                else
+                {
+                    u8* dst = m_frame_buffer + frame_buffer_index;
+                    dst[0] = 0;
+                    dst[1] = 0;
+                    dst[2] = 0;
+                    dst[3] = 255;
+                }
+            }
+            else if (bytes_per_pixel == 2)
+            {
+                u16* dst = reinterpret_cast<u16*>(m_frame_buffer + frame_buffer_index);
+                *dst = palette565[final_pixel];
+            }
+            else
+            {
+                memcpy(m_frame_buffer + frame_buffer_index, palette888 + (final_pixel * 4), 4);
+            }
+            frame_buffer_index += bytes_per_pixel;
+        }
+    }
+}
+
+INLINE void HuC6260::SanitizeState()
+{
+    m_color_table_address &= 0x01FF;
+    m_speed = m_control_register & 0x03;
+    m_blur = (m_control_register >> 2) & 0x01;
+
+    switch (m_speed)
+    {
+        case 0:
+            m_clock_divider = 4;
+            break;
+        case 1:
+            m_clock_divider = 3;
+            break;
+        default:
+            m_clock_divider = 2;
+            break;
+    }
+
+    m_hpos = CLAMP(m_hpos, 0, HUC6260_LINE_LENGTH - 1);
+    m_vpos = CLAMP(m_vpos, 0, k_huc6260_total_lines[m_blur] - 1);
+    m_pixel_x = CLAMP(m_pixel_x, 0, k_huc6260_full_line_width[m_speed] - 1);
+    m_pixel_index = CLAMP(m_pixel_index, 0, k_huc6260_line_width[1][HuC6260_SPEED_10_8_MHZ] * HUC6270_LINES_ACTIVE);
+    m_hsync = m_hsync ? true : false;
+    m_vsync = m_vsync ? true : false;
+    m_multiple_speeds = m_multiple_speeds ? true : false;
+
+    for (int i = 0; i < 512; i++)
+        m_color_table[i] &= 0x01FF;
+
+    CalculateScreenBounds();
+    m_active_line = (m_vpos >= m_screen_start_y) && (m_vpos < m_screen_end_y);
+}
+
+INLINE HuC6260::HuC6260_State* HuC6260::GetState()
+{
+    return &m_state;
+}
+
+INLINE HuC6260::HuC6260_Speed HuC6260::GetSpeed()
+{
+    return k_huc6260_speed[m_speed];
+}
+
+INLINE int HuC6260::GetClockDivider()
+{
+    return m_clock_divider;
+}
+
+INLINE int HuC6260::GetTotalLines()
+{
+    return k_huc6260_total_lines[m_blur];
+}
+
+INLINE u16* HuC6260::GetColorTable()
+{
+    return m_color_table;
+}
+
+INLINE void HuC6260::SetBuffer(u8* frame_buffer)
+{
+    m_frame_buffer = frame_buffer;
+}
+
+INLINE u8* HuC6260::GetBuffer()
+{
+    return m_frame_buffer;
+}
+
+INLINE int HuC6260::GetCurrentWidth()
+{
+    if (!m_laseractive->IsActive())
+    {
+        if (m_auto_crop)
+            return m_crop_width;
+        return m_scaled_width ? k_huc6260_scaling_width[m_overscan] : k_huc6260_line_width[m_overscan][m_speed];
+    }
+    return m_laseractive_width;
+}
+
+INLINE int HuC6260::GetCurrentHeight()
+{
+    if (!m_laseractive->IsActive())
+        return CLAMP(HUC6270_LINES_ACTIVE - m_scanline_start - ((HUC6270_LINES_ACTIVE - 1) - m_scanline_end), 1, HUC6270_LINES_ACTIVE);
+    return m_laseractive_scanline_end - m_laseractive_scanline_start + 1;
+}
+
+INLINE void HuC6260::GetScreenBounds(int* start_x, int* end_x, int* start_y, int* end_y)
+{
+    *start_x = m_screen_start_x;
+    *end_x = m_screen_end_x;
+    *start_y = m_screen_start_y;
+    *end_y = m_screen_end_y;
+}
+
+INLINE int HuC6260::GetWidthScale()
+{
+    if (!m_laseractive->IsActive())
+        return m_scaled_width ? 3 : 1;
+    return 1;
+}
+
+INLINE float HuC6260::GetPixelAspectRatio()
+{
+    return (float)(m_scaled_width ? 3 : m_clock_divider) / HUC6260_SQUARE_PIXEL_CLOCKS;
+}
+
+INLINE void HuC6260::SetScanlineStart(int scanline_start)
+{
+    m_scanline_start = CLAMP(scanline_start, 0, HUC6270_LINES_ACTIVE - 1);
+    m_screen_start_y = m_scanline_start + HUC6270_LINES_TOP_BLANKING;
+}
+
+INLINE void HuC6260::SetScanlineEnd(int scanline_end)
+{
+    m_scanline_end = CLAMP(scanline_end, 0, HUC6270_LINES_ACTIVE - 1);
+    m_screen_end_y = m_scanline_end + HUC6270_LINES_TOP_BLANKING + 1;
+}
+
+INLINE void HuC6260::SetLaserActiveScanlines(int start, int end)
+{
+    m_laseractive_scanline_start = CLAMP(start, 0, HUC6260_LINES - 1);
+    m_laseractive_scanline_end = CLAMP(end, m_laseractive_scanline_start, HUC6260_LINES - 1);
+}
+
+INLINE void HuC6260::SetLaserActivePixels(int start, int end)
+{
+    m_laseractive_pixel_start = CLAMP(start, 0, HUC6260_LASERACTIVE_PIXEL_WIDTH - 1);
+    end = CLAMP(end, m_laseractive_pixel_start, HUC6260_LASERACTIVE_PIXEL_WIDTH - 1);
+    m_laseractive_width = (end - m_laseractive_pixel_start + 1) * HUC6260_LASERACTIVE_WIDTH_SCALE;
+}
+
+INLINE void HuC6260::SetOverscan(int overscan)
+{
+    m_overscan = overscan ? 1 : 0;
+    m_auto_crop = (overscan == 2);
+    m_screen_start_x = k_huc6260_line_start[m_overscan][m_speed];
+    m_screen_end_x = k_huc6260_line_end[m_overscan][m_speed];
+    ResetCrop();
+}
+
+INLINE GG_Pixel_Format HuC6260::GetPixelFormat()
+{
+    return m_pixel_format;
+}
+
+INLINE void HuC6260::SetResetValue(int value)
+{
+    m_reset_value = value;
+}
+
+INLINE void HuC6260::SetPalette(int palette)
+{
+    if (palette >= 0 && palette < HuC6260_PALETTE_COUNT)
+        m_palette = palette;
+}
+
+INLINE u8 HuC6260::RGB565Component(u8 value, u16 max)
+{
+    return (u8)((value * max + 127) / 255);
+}
+
+INLINE u16 HuC6260::PackRGB565(u8 red, u8 green, u8 blue)
+{
+    return (RGB565Component(red, 31) << 11) | (RGB565Component(green, 63) << 5) | RGB565Component(blue, 31);
+}
+
+INLINE u8 HuC6260::RoundToByte(float value)
+{
+    if (value <= 0.0f)
+        return 0;
+
+    if (value >= 255.0f)
+        return 255;
+
+    return (u8)(value + 0.5f);
+}
+
+#endif /* HUC6260_INLINE_H */

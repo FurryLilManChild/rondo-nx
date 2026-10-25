@@ -1,0 +1,1477 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include "geargrafx_core.h"
+#include "common.h"
+#include "media.h"
+#include "memory.h"
+#include "huc6202.h"
+#include "huc6260.h"
+#include "huc6270.h"
+#include "huc6280.h"
+#include "trace_logger.h"
+#include "profiler.h"
+#include "scsi_controller.h"
+#include "random.h"
+#include "cdrom.h"
+#include "cdrom_media.h"
+#include "cdrom_audio.h"
+#include "adpcm.h"
+#include "audio.h"
+#include "input.h"
+#include "memory_stream.h"
+#include "laseractive.h"
+
+GeargrafxCore::GeargrafxCore()
+{
+    InitPointer(m_memory);
+    InitPointer(m_huc6202);
+    InitPointer(m_huc6260);
+    InitPointer(m_huc6270_1);
+    InitPointer(m_huc6270_2);
+    InitPointer(m_huc6280);
+    InitPointer(m_cdrom);
+    InitPointer(m_cdrom_media);
+    InitPointer(m_cdrom_audio);
+    InitPointer(m_adpcm);
+    InitPointer(m_scsi_controller);
+    InitPointer(m_random);
+    InitPointer(m_audio);
+    InitPointer(m_input);
+    InitPointer(m_media);
+    InitPointer(m_trace_logger);
+    InitPointer(m_profiler);
+    InitPointer(m_laseractive);
+    m_paused = true;
+    m_master_clock_cycles = 0;
+    m_turbolink_cycles = 0;
+    m_turbolink_next_sync_cycle = TURBOLINK_MAX_SYNC_CYCLES;
+    m_frame_ready = false;
+    m_mb128_mode = GG_MB128_AUTO;
+    m_requested_psg_revision = GG_PSG_REVISION_AUTO;
+    m_psg_revision = GG_PSG_REVISION_AUTO;
+    m_requested_adpcm_clock_speed = 0.0f;
+}
+
+GeargrafxCore::~GeargrafxCore()
+{
+    SafeDelete(m_trace_logger);
+    SafeDelete(m_profiler);
+    SafeDelete(m_laseractive);
+    SafeDelete(m_media);
+    SafeDelete(m_input);
+    SafeDelete(m_audio);
+    SafeDelete(m_scsi_controller);
+    SafeDelete(m_adpcm);
+    SafeDelete(m_cdrom_audio);
+    SafeDelete(m_cdrom_media);
+    SafeDelete(m_cdrom);
+    SafeDelete(m_huc6280);
+    SafeDelete(m_huc6270_1);
+    SafeDelete(m_huc6270_2);
+    SafeDelete(m_huc6260);
+    SafeDelete(m_huc6202);
+    SafeDelete(m_memory);
+    SafeDelete(m_random);
+}
+
+void GeargrafxCore::Init(GG_Input_Pump_Fn input_pump_fn, GG_Pixel_Format pixel_format)
+{
+    Log("Loading %s core %s by Ignacio Sanchez", GG_TITLE, GG_VERSION);
+
+    m_cdrom_media = new CdRomMedia();
+    m_laseractive = new LaserActive(m_cdrom_media);
+    m_media = new Media(m_cdrom_media);
+    m_random = new Random();
+    m_random->Seed((u32)time(NULL));
+    m_huc6280 = new HuC6280(m_random);
+    m_huc6270_1 = new HuC6270(m_huc6280);
+    m_huc6270_2 = new HuC6270(m_huc6280);
+    m_huc6202 = new HuC6202(m_huc6270_1, m_huc6270_2, m_huc6280);
+    m_huc6260 = new HuC6260(m_huc6202, m_huc6280, m_random, m_laseractive);
+    m_input = new Input(m_media, this);
+    m_adpcm = new Adpcm();
+    m_cdrom_audio = new CdRomAudio(m_cdrom_media, m_laseractive);
+    m_audio = new Audio(m_adpcm, m_cdrom_audio);
+    m_scsi_controller = new ScsiController(m_cdrom_media, m_cdrom_audio, m_random, m_laseractive);
+    m_cdrom = new CdRom(m_cdrom_audio, m_scsi_controller, this, m_laseractive);
+    m_memory = new Memory(m_huc6260, m_huc6202, m_huc6280, m_media, m_input, m_audio, m_cdrom, m_random, m_laseractive);
+
+    m_audio->Init();
+    m_input->Init();
+    m_cdrom_media->Init(m_laseractive);
+    m_cdrom->Init(m_huc6280, m_memory, m_adpcm);
+    m_scsi_controller->Init(m_cdrom);
+    m_media->Init();
+    m_memory->Init();
+    m_huc6260->Init(pixel_format);
+    m_huc6202->Init();
+    m_huc6270_1->Init(m_huc6260, m_huc6202, input_pump_fn, 0);
+    m_huc6270_2->Init(m_huc6260, m_huc6202, NULL, 1);
+    m_huc6280->Init(m_memory, m_huc6202);
+    m_adpcm->Init(this, m_cdrom, m_scsi_controller);
+    m_cdrom_audio->Init(m_cdrom, m_scsi_controller);
+    m_laseractive->Init(m_cdrom, m_memory, m_cdrom_audio);
+
+    SelectPSGRevision();
+    SelectADPCMClockSpeed();
+
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    m_trace_logger = new TraceLogger(&m_master_clock_cycles);
+    m_memory->SetTraceLogger(m_trace_logger);
+    m_huc6202->SetTraceLogger(m_trace_logger);
+    m_huc6280->SetTraceLogger(m_trace_logger);
+    m_huc6270_1->SetTraceLogger(m_trace_logger);
+    m_huc6270_2->SetTraceLogger(m_trace_logger);
+    m_huc6260->SetTraceLogger(m_trace_logger);
+    m_audio->SetTraceLogger(m_trace_logger);
+    m_input->SetTraceLogger(m_trace_logger);
+    m_cdrom->SetTraceLogger(m_trace_logger);
+    m_cdrom_audio->SetTraceLogger(m_trace_logger);
+    m_adpcm->SetTraceLogger(m_trace_logger);
+    m_scsi_controller->SetTraceLogger(m_trace_logger);
+    m_profiler = new Profiler(&m_master_clock_cycles);
+    m_huc6280->SetProfiler(m_profiler);
+#endif
+}
+
+void GeargrafxCore::SetADPCMClockSpeed(float clock_speed)
+{
+    if ((clock_speed == 0.0f) || ((clock_speed >= 32000.0f) && (clock_speed <= 32200.0f)))
+    {
+        m_requested_adpcm_clock_speed = clock_speed;
+
+        if (IsValidPointer(m_adpcm) && IsValidPointer(m_media))
+            SelectADPCMClockSpeed();
+    }
+}
+
+void GeargrafxCore::SelectADPCMClockSpeed()
+{
+    float clock_speed = m_requested_adpcm_clock_speed;
+
+    if (clock_speed == 0.0f)
+        clock_speed = m_media->GetADPCMClockSpeed();
+
+    m_adpcm->SetClockSpeed(clock_speed);
+}
+
+void GeargrafxCore::SetPSGRevision(GG_PSG_Revision revision)
+{
+    if ((revision == GG_PSG_REVISION_AUTO) || (revision == GG_PSG_REVISION_HUC6280) ||
+        (revision == GG_PSG_REVISION_HUC6280A))
+    {
+        m_requested_psg_revision = revision;
+
+        if (IsValidPointer(m_audio) && IsValidPointer(m_media))
+            SelectPSGRevision();
+    }
+}
+
+void GeargrafxCore::SelectPSGRevision()
+{
+    GG_PSG_Revision revision = m_requested_psg_revision;
+
+    if (revision == GG_PSG_REVISION_AUTO)
+        revision = m_media->IsSGX() ? GG_PSG_REVISION_HUC6280A : GG_PSG_REVISION_HUC6280;
+
+    if (revision != m_psg_revision)
+    {
+        m_psg_revision = revision;
+        m_audio->GetPSG()->EnableHuC6280A(revision == GG_PSG_REVISION_HUC6280A);
+        Log("PSG revision: %s", revision == GG_PSG_REVISION_HUC6280A ? "HuC6280A" : "HuC6280");
+    }
+}
+
+bool GeargrafxCore::LoadMedia(const char* file_path, bool softpatching)
+{
+    ClearCheats();
+
+    if (m_media->LoadMedia(file_path, softpatching))
+    {
+        m_memory->ResetDisassemblerRecords();
+        Reset();
+        return true;
+    }
+    else
+        return false;
+}
+
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+bool GeargrafxCore::LoadPhysicalCdRom(const char* device_id)
+{
+    ClearCheats();
+
+    if (m_media->LoadPhysicalCdRom(device_id))
+    {
+        m_memory->ResetDisassemblerRecords();
+        Reset();
+        return true;
+    }
+    else
+        return false;
+}
+#endif
+
+bool GeargrafxCore::LoadHuCardFromBuffer(const u8* buffer, int size, const char* path)
+{
+    ClearCheats();
+
+    if (m_media->LoadHuCardFromBuffer(buffer, size, path))
+    {
+        m_memory->ResetDisassemblerRecords();
+        Reset();
+        return true;
+    }
+    else
+        return false;
+}
+
+bool GeargrafxCore::LoadBios(const char* file_path, bool syscard)
+{
+    return m_media->LoadBios(file_path, syscard);
+}
+
+bool GeargrafxCore::LoadBiosFromBuffer(const u8* buffer, int size, bool syscard)
+{
+    return m_media->LoadBiosFromBuffer(buffer, size, syscard);
+}
+
+void GeargrafxCore::UnloadBios(bool syscard)
+{
+    m_media->UnloadBios(syscard);
+}
+
+bool GeargrafxCore::LoadPacBios(const char* file_path, GG_LaserActive_Region region)
+{
+    return m_media->LoadPacBios(file_path, region);
+}
+
+bool GeargrafxCore::LoadPacBiosFromBuffer(const u8* buffer, int size, GG_LaserActive_Region region)
+{
+    return m_media->LoadPacBiosFromBuffer(buffer, size, region);
+}
+
+void GeargrafxCore::UnloadPacBios(GG_LaserActive_Region region)
+{
+    m_media->UnloadPacBios(region);
+}
+
+void GeargrafxCore::SetLaserActiveRegion(GG_LaserActive_Region region)
+{
+    m_media->SetLaserActiveRegion(region);
+}
+
+bool GeargrafxCore::EjectLaserDisc()
+{
+    bool ejected = m_cdrom_media->IsMmiEjected();
+    if (!m_cdrom_media->EjectMmi())
+        return false;
+
+    if (!ejected)
+        m_cdrom->NotifyMediaEjected();
+    return true;
+}
+
+bool GeargrafxCore::InsertLaserDisc()
+{
+    if (!m_cdrom_media->InsertMmi())
+        return false;
+
+    return true;
+}
+
+bool GeargrafxCore::SelectLaserDiscMedia(u32 index)
+{
+    if (!m_cdrom_media->SelectMmiMedia(index))
+        return false;
+
+    m_cdrom_audio->StopAudio();
+    return true;
+}
+
+bool GeargrafxCore::GetRuntimeInfo(GG_Runtime_Info& runtime_info)
+{
+    runtime_info.screen_width = m_huc6260->GetCurrentWidth();
+    runtime_info.screen_height = m_huc6260->GetCurrentHeight();
+    runtime_info.width_scale = m_huc6260->GetWidthScale();
+    runtime_info.pixel_aspect_ratio = m_huc6260->GetPixelAspectRatio();
+    runtime_info.aspect_ratio = 0.0f;
+    if (m_media->IsCDROM() && m_media->IsLaserActive())
+        runtime_info.aspect_ratio = 4.0f / 3.0f;
+    runtime_info.fps = huc6260_get_frame_rate(m_huc6260->GetTotalLines());
+
+    return m_media->IsReady();
+}
+
+bool GeargrafxCore::SetCheat(const char* cheat)
+{
+    if (!m_media->IsReady())
+        return false;
+
+    GG_Cheat cheats[GG_MAX_CHEATS];
+    int count = ParseCheat(cheat, cheats, GG_MAX_CHEATS);
+
+    if (count <= 0)
+        return false;
+
+    int ram_count = 0;
+    int rom_count = 0;
+
+    for (int i = 0; i < count; i++)
+    {
+        switch (m_memory->GetBankType((u8)(cheats[i].address >> 13)))
+        {
+            case Memory::MEMORY_BANK_TYPE_ROM:
+                rom_count++;
+                break;
+            case Memory::MEMORY_BANK_TYPE_CARD_RAM:
+            case Memory::MEMORY_BANK_TYPE_BACKUP_RAM:
+            case Memory::MEMORY_BANK_TYPE_WRAM:
+            case Memory::MEMORY_BANK_TYPE_CDROM_RAM:
+                ram_count++;
+                break;
+            default:
+                return false;
+        }
+    }
+
+    if (!m_memory->CanAddRamCheats(ram_count) || !m_media->CanAddRomCheats(rom_count))
+        return false;
+
+    for (int i = 0; i < count; i++)
+    {
+        if (m_memory->GetBankType((u8)(cheats[i].address >> 13)) == Memory::MEMORY_BANK_TYPE_ROM)
+            m_media->AddRomCheat(cheats[i]);
+        else
+            m_memory->AddRamCheat(cheats[i]);
+    }
+
+    if (rom_count > 0)
+        m_media->ApplyRomCheats();
+
+    return true;
+}
+
+void GeargrafxCore::ClearCheats()
+{
+    m_media->ClearRomCheats();
+    m_memory->ClearRamCheats();
+}
+
+bool GeargrafxCore::IsValidCheat(const char* cheat)
+{
+    GG_Cheat cheats[GG_MAX_CHEATS];
+    return ParseCheat(cheat, cheats, GG_MAX_CHEATS) > 0;
+}
+
+int GeargrafxCore::ParseCheat(const char* cheat, GG_Cheat* cheats, int max_cheats)
+{
+    if (!IsValidPointer(cheat))
+        return 0;
+
+    int count = 0;
+    const char* p = cheat;
+
+    while (*p != 0)
+    {
+        while (IsCheatSeparator(*p))
+            p++;
+
+        if (*p == 0)
+            break;
+
+        const char* code = p;
+
+        while ((*p != 0) && !IsCheatSeparator(*p))
+            p++;
+
+        int parsed = ParseCheatCode(code, (int)(p - code), cheats + count, max_cheats - count);
+
+        if (parsed <= 0)
+            return 0;
+
+        count += parsed;
+    }
+
+    return count;
+}
+
+int GeargrafxCore::ParseCheatCode(const char* code, int length, GG_Cheat* cheats, int max_cheats)
+{
+    u32 address = 0;
+    u8 compare = 0;
+    bool has_compare = false;
+    int pos = 6;
+
+    if ((length < 8) || !parse_hex_string(code, 6, &address))
+        return 0;
+
+    if (code[pos] == '?')
+    {
+        if ((length < 11) || !parse_hex_string(code + 7, 2, &compare))
+            return 0;
+
+        has_compare = true;
+        pos = 9;
+    }
+
+    if (code[pos] != ':')
+        return 0;
+
+    pos++;
+
+    const char* value_str = code + pos;
+    int digits = length - pos;
+    u16 value = 0;
+
+    if (digits == 3)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            if ((value_str[i] < '0') || (value_str[i] > '9'))
+                return 0;
+
+            value = (value * 10) + (value_str[i] - '0');
+        }
+
+        if (value > 0xFF)
+            return 0;
+    }
+    else if (((digits < 1) || (digits > 4)) || !parse_hex_string(value_str, digits, &value))
+        return 0;
+
+    if (address > 0x1FFFFF)
+        address = ((address >> 16) << 13) | (address & 0x1FFF);
+
+    if (digits == 4)
+    {
+        if (has_compare || (max_cheats < 2))
+            return 0;
+
+        cheats[0].address = address;
+        cheats[0].compare = -1;
+        cheats[0].value = value & 0xFF;
+        cheats[1].address = (address + 1) & 0x1FFFFF;
+        cheats[1].compare = -1;
+        cheats[1].value = value >> 8;
+        return 2;
+    }
+
+    if (max_cheats < 1)
+        return 0;
+
+    cheats[0].address = address;
+    cheats[0].compare = has_compare ? compare : -1;
+    cheats[0].value = value & 0xFF;
+    return 1;
+}
+
+bool GeargrafxCore::IsCheatSeparator(char c)
+{
+    return (c == '+') || (c == ',') || (c == ';') || (c == ' ') || (c == '\t') || (c == '\r') || (c == '\n');
+}
+
+TraceLogger* GeargrafxCore::GetTraceLogger()
+{
+    return m_trace_logger;
+}
+
+Profiler* GeargrafxCore::GetProfiler()
+{
+    return m_profiler;
+}
+
+void GeargrafxCore::SetTurboLinkCallbacks(
+    GG_TurboLink_Publish_Callback publish_callback, GG_TurboLink_Sample_Callback sample_callback,
+    GG_TurboLink_Sync_Callback sync_callback, void* user_data)
+{
+    m_input->SetTurboLinkCallbacks(publish_callback, sample_callback,
+        sync_callback, user_data);
+}
+
+void GeargrafxCore::SetTurboLinkCableConnected(bool connected)
+{
+    m_input->SetTurboLinkCableConnected(connected);
+    m_turbolink_next_sync_cycle = m_turbolink_cycles + TURBOLINK_MAX_SYNC_CYCLES;
+}
+
+void GeargrafxCore::InvalidateTurboLinkSample()
+{
+    m_input->InvalidateTurboLinkSample();
+}
+
+GG_TurboLink_Drive GeargrafxCore::GetTurboLinkDrive() const
+{
+    return m_input->GetTurboLinkDrive();
+}
+
+void GeargrafxCore::KeyPressed(GG_Controllers controller, GG_Keys key)
+{
+    m_input->KeyPressed(controller, key);
+}
+
+void GeargrafxCore::KeyReleased(GG_Controllers controller, GG_Keys key)
+{
+    m_input->KeyReleased(controller, key);
+}
+
+void GeargrafxCore::Pause(bool paused)
+{
+    if (!m_paused && paused)
+    {
+        Debug("Core paused");
+    }
+    else if (m_paused && !paused)
+    {
+        Debug("Core resumed");
+    }
+
+    m_paused = paused;
+}
+
+bool GeargrafxCore::IsPaused()
+{
+    return m_paused;
+}
+
+void GeargrafxCore::ResetMedia(bool preserve_ram)
+{
+    if (!m_media->IsReady())
+        return;
+
+    using namespace std;
+    stringstream stream;
+
+    if (preserve_ram)
+        m_memory->SaveRam(stream);
+
+    Log(GG_TITLE " RESET");
+    Reset();
+    m_huc6280->DisassembleNextOPCode();
+
+    if (preserve_ram)
+    {
+        stream.seekg(0, stream.end);
+        s32 size = (s32)stream.tellg();
+        stream.seekg(0, stream.beg);
+        m_memory->LoadRam(stream, size);
+    }
+}
+
+void GeargrafxCore::SaveRam()
+{
+    SaveRam(NULL);
+}
+
+void GeargrafxCore::SaveRam(const char* path, bool full_path)
+{
+    if (m_media->IsReady() && m_memory->IsBackupRamUsed())
+    {
+        using namespace std;
+        string final_path;
+
+        if (IsValidPointer(path))
+        {
+            final_path = path;
+            if (!full_path)
+            {
+                append_path_component(final_path, m_media->GetFileName());
+            }
+        }
+        else
+            final_path = m_media->GetFilePath();
+
+        if (!full_path)
+        {
+            string::size_type i = final_path.rfind('.', final_path.length());
+            if (i != string::npos)
+                final_path.replace(i, final_path.length() - i, ".sav");
+        }
+
+        Log("Saving BRAM file: %s", final_path.c_str());
+
+        ofstream file;
+        open_ofstream_utf8(file, final_path.c_str(), ios::out | ios::binary);
+        m_memory->SaveRam(file);
+
+        Debug("BRAM saved");
+    }
+}
+
+void GeargrafxCore::LoadRam()
+{
+    LoadRam(NULL);
+}
+
+void GeargrafxCore::SaveMB128(const char* path, bool full_path)
+{
+    if (m_input->GetMB128()->IsConnected())
+    {
+        using namespace std;
+        string final_path;
+
+        if (IsValidPointer(path))
+        {
+            final_path = path;
+            if (!full_path)
+                append_path_component(final_path, "mb128.sav");
+        }
+        else
+        {
+            final_path = "mb128.sav";
+        }
+
+        Log("Saving MB128 file: %s", final_path.c_str());
+
+        ofstream file;
+        open_ofstream_utf8(file, final_path.c_str(), ios::out | ios::binary);
+        if (!file.is_open())
+        {
+            Error("Failed to open MB128 file for writing: %s", final_path.c_str());
+            return;
+        }
+
+        MB128* mb128 = m_input->GetMB128();
+        file.write(reinterpret_cast<const char*>(mb128->GetRAM()), mb128->GetRAMSize());
+        file.close();
+
+        if (file.fail())
+        {
+            Error("Failed to save MB128 file: %s", final_path.c_str());
+            return;
+        }
+
+        mb128->ClearDirty();
+        Debug("MB128 saved");
+    }
+}
+
+void GeargrafxCore::LoadMB128(const char* path, bool full_path)
+{
+    if (m_input->GetMB128()->IsConnected())
+    {
+        using namespace std;
+        string final_path;
+
+        if (IsValidPointer(path))
+        {
+            final_path = path;
+            if (!full_path)
+                append_path_component(final_path, "mb128.sav");
+        }
+        else
+        {
+            final_path = "mb128.sav";
+        }
+
+        Log("Loading MB128 file: %s", final_path.c_str());
+
+        ifstream file;
+        open_ifstream_utf8(file, final_path.c_str(), ios::in | ios::binary);
+
+        if (!file.fail())
+        {
+            file.seekg(0, file.end);
+            s32 file_size = (s32)file.tellg();
+            file.seekg(0, file.beg);
+
+            MB128* mb128 = m_input->GetMB128();
+            if (file_size == (s32)mb128->GetRAMSize())
+            {
+                u8* buffer = new u8[mb128->GetRAMSize()];
+                if (!file.read(reinterpret_cast<char*>(buffer), mb128->GetRAMSize()))
+                {
+                    SafeDeleteArray(buffer);
+                    Error("Failed to read MB128 file: %s", final_path.c_str());
+                    return;
+                }
+
+                memcpy(mb128->GetRAM(), buffer, mb128->GetRAMSize());
+                SafeDeleteArray(buffer);
+                mb128->ClearDirty();
+                Debug("MB128 loaded");
+            }
+            else
+            {
+                Error("Failed to load MB128 from %s", final_path.c_str());
+                Error("Invalid MB128 size: %d (expected %u)", file_size, mb128->GetRAMSize());
+            }
+        }
+        else
+        {
+            Log("MB128 file doesn't exist: %s", final_path.c_str());
+        }
+    }
+}
+
+void GeargrafxCore::LoadRam(const char* path, bool full_path)
+{
+    if (m_media->IsReady() && m_memory->IsBackupRamEnabled())
+    {
+        using namespace std;
+        string final_path;
+
+        if (IsValidPointer(path))
+        {
+            final_path = path;
+            if (!full_path)
+            {
+                append_path_component(final_path, m_media->GetFileName());
+            }
+        }
+        else
+            final_path = m_media->GetFilePath();
+
+        if (!full_path)
+        {
+            string::size_type i = final_path.rfind('.', final_path.length());
+            if (i != string::npos)
+                final_path.replace(i, final_path.length() - i, ".sav");
+        }
+
+        Log("Loading BRAM file: %s", final_path.c_str());
+
+        ifstream file;
+        open_ifstream_utf8(file, final_path.c_str(), ios::in | ios::binary);
+
+        if (!file.fail())
+        {
+            file.seekg(0, file.end);
+            s32 file_size = (s32)file.tellg();
+            file.seekg(0, file.beg);
+
+            if (m_memory->LoadRam(file, file_size))
+            {
+                Debug("BRAM loaded");
+            }
+            else
+            {
+                Error("Failed to load BRAM from %s", final_path.c_str());
+                Error("Invalid BRAM size: %d", file_size);
+            }
+        }
+        else
+        {
+            Log("BRAM file doesn't exist: %s", final_path.c_str());
+        }
+    }
+}
+
+std::string GeargrafxCore::GetSaveStatePath(const char* path, int index)
+{
+    if (index < 0)
+    {
+        if (IsValidPointer(path))
+            return path;
+
+        using namespace std;
+        string full_path = m_media->GetFilePath();
+        string::size_type dot_index = full_path.rfind('.');
+
+        if (dot_index != string::npos)
+            full_path.replace(dot_index + 1, full_path.length() - dot_index - 1, "state");
+
+        return full_path;
+    }
+
+    using namespace std;
+    string full_path;
+
+    if (IsValidPointer(path))
+    {
+        full_path = path;
+        append_path_component(full_path, m_media->GetFileName());
+    }
+    else
+        full_path = m_media->GetFilePath();
+
+    string::size_type dot_index = full_path.rfind('.');
+
+    if (dot_index != string::npos)
+        full_path.replace(dot_index + 1, full_path.length() - dot_index - 1, "state");
+
+    stringstream ss;
+    ss << index;
+    full_path += ss.str();
+
+    return full_path;
+}
+
+bool GeargrafxCore::SaveState(const char* path, int index, bool screenshot)
+{
+    using namespace std;
+
+    string full_path = GetSaveStatePath(path, index);
+    string temp_path = full_path + ".tmp";
+    Debug("Saving state to %s...", full_path.c_str());
+
+    ofstream stream;
+    open_ofstream_utf8(stream, temp_path.c_str(), ios::out | ios::binary);
+
+    if (!stream.is_open())
+    {
+        Error("Failed to open save state file for writing: %s", temp_path.c_str());
+        return false;
+    }
+
+    size_t size = 0;
+    if (!SaveState(stream, size, screenshot))
+    {
+        stream.close();
+        remove_file_utf8(temp_path.c_str());
+        Error("Failed to save state to file: %s", full_path.c_str());
+        return false;
+    }
+
+    stream.close();
+
+    if (!stream.good() || !rename_file_utf8(temp_path.c_str(), full_path.c_str()))
+    {
+        remove_file_utf8(temp_path.c_str());
+        Error("Failed to write save state file: %s", full_path.c_str());
+        return false;
+    }
+
+    Log("Saved state to %s", full_path.c_str());
+    return true;
+}
+
+bool GeargrafxCore::SaveState(u8* buffer, size_t& size, bool screenshot)
+{
+    using namespace std;
+
+    Debug("Saving state to buffer [%d bytes]...", size);
+
+    if (!m_media->IsReady())
+    {
+        Error("Cartridge is not ready when trying to save state");
+        return false;
+    }
+
+    if (!IsValidPointer(buffer))
+    {
+        stringstream stream;
+        if (!SaveState(stream, size, screenshot))
+        {
+            Error("Failed to save state to stream to calculate size");
+            return false;
+        }
+        return true;
+    }
+    else
+    {
+        memory_stream direct_stream(reinterpret_cast<char*>(buffer), size);
+
+        if (!SaveState(direct_stream, size, screenshot))
+        {
+            Error("Failed to save state to buffer");
+            return false;
+        }
+
+        if (!direct_stream.good())
+        {
+            Error("Failed to save state to buffer: output buffer is too small");
+            return false;
+        }
+
+        size = direct_stream.size();
+        return true;
+    }
+}
+
+bool GeargrafxCore::SaveState(std::ostream& stream, size_t& size, bool screenshot)
+{
+    using namespace std;
+
+    if (!m_media->IsReady())
+    {
+        Error("Cartridge is not ready when trying to save state");
+        return false;
+    }
+
+    Debug("Serializing save state...");
+
+    bool cdrom_hardware_enabled = m_media->IsCDROMHardwareEnabled();
+    stream.write(reinterpret_cast<const char*> (&cdrom_hardware_enabled), sizeof(cdrom_hardware_enabled));
+
+    u32 content_crc = m_media->GetCRC();
+    stream.write(reinterpret_cast<const char*>(&content_crc), sizeof(content_crc));
+
+    stream.write(reinterpret_cast<const char*> (&m_master_clock_cycles), sizeof(m_master_clock_cycles));
+
+    m_memory->SaveState(stream);
+    m_huc6202->SaveState(stream);
+    m_huc6260->SaveState(stream);
+    m_huc6270_1->SaveState(stream);
+    m_huc6270_2->SaveState(stream);
+    m_huc6280->SaveState(stream);
+    m_audio->SaveState(stream);
+    m_input->SaveState(stream);
+    if (m_media->IsCDROMHardwareEnabled())
+    {
+        if (m_cdrom_media->IsMmi() && !m_media->IsLaserActive())
+        {
+            u32 index = m_cdrom_media->GetSelectedMmiMediaIndex();
+            bool ejected = m_cdrom_media->IsMmiEjected();
+            stream.write(reinterpret_cast<const char*>(&index), sizeof(index));
+            stream.write(reinterpret_cast<const char*>(&ejected), sizeof(ejected));
+        }
+        m_cdrom->SaveState(stream);
+        m_scsi_controller->SaveState(stream);
+        m_cdrom_audio->SaveState(stream);
+        m_adpcm->SaveState(stream);
+        if (m_media->IsLaserActive())
+        {
+            m_laseractive->SaveState(stream);
+            m_huc6260->SaveLaserActiveState(stream);
+        }
+    }
+    m_random->SaveState(stream);
+
+    if (stream.fail())
+    {
+        Error("Failed to serialize save state");
+        return false;
+    }
+
+#if defined(__LIBRETRO__)
+    UNUSED(screenshot);
+    GG_SaveState_Header_Libretro header;
+    header.magic = GG_SAVESTATE_MAGIC;
+    header.version = GG_SAVESTATE_VERSION;
+    Debug("Save state header magic: 0x%08x", header.magic);
+    Debug("Save state header version: %d", header.version);
+#else
+    GG_SaveState_Header header;
+    header.magic = GG_SAVESTATE_MAGIC;
+    header.version = GG_SAVESTATE_VERSION;
+
+    header.timestamp = time(NULL);
+    strncpy_fit(header.rom_name, m_media->GetFileName(), sizeof(header.rom_name));
+    header.rom_crc = m_media->GetCRC();
+    strncpy_fit(header.emu_build, GG_VERSION, sizeof(header.emu_build));
+
+    Debug("Save state header magic: 0x%08x", header.magic);
+    Debug("Save state header version: %d", header.version);
+    Debug("Save state header timestamp: %d", header.timestamp);
+    Debug("Save state header rom name: %s", header.rom_name);
+    Debug("Save state header rom crc: 0x%08x", header.rom_crc);
+    Debug("Save state header emu build: %s", header.emu_build);
+
+    u8* frame_buffer = m_huc6260->GetBuffer();
+
+    if (screenshot && IsValidPointer(frame_buffer))
+    {
+        header.screenshot_width = m_huc6260->GetCurrentWidth();
+        header.screenshot_height = m_huc6260->GetCurrentHeight();
+        header.screenshot_width_scale = m_huc6260->GetWidthScale();
+
+        int bytes_per_pixel = 2;
+        if (m_huc6260->GetPixelFormat() == GG_PIXEL_RGBA8888)
+            bytes_per_pixel = 4;
+
+        header.screenshot_size = header.screenshot_width * header.screenshot_height * bytes_per_pixel;
+        stream.write(reinterpret_cast<const char*>(frame_buffer), header.screenshot_size);
+    }
+    else
+    {
+        header.screenshot_size = 0;
+        header.screenshot_width = 0;
+        header.screenshot_height = 0;
+        header.screenshot_width_scale = 0;
+    }
+
+    Debug("Save state header screenshot size: %d", header.screenshot_size);
+    Debug("Save state header screenshot width: %d", header.screenshot_width);
+    Debug("Save state header screenshot height: %d", header.screenshot_height);
+#endif
+
+    std::streampos position = stream.tellp();
+    if (position == std::streampos(-1))
+    {
+        Error("Failed to calculate save state size");
+        return false;
+    }
+
+    size = static_cast<size_t>(position);
+    size += sizeof(header);
+
+#if !defined(__LIBRETRO__)
+    header.size = static_cast<u32>(size);
+    Debug("Save state header size: %d", header.size);
+#endif
+
+    stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+    if (stream.fail())
+    {
+        Error("Failed to write save state header");
+        return false;
+    }
+
+    return true;
+}
+
+bool GeargrafxCore::LoadState(const char* path, int index)
+{
+    using namespace std;
+    bool ret = false;
+
+    string full_path = GetSaveStatePath(path, index);
+    Debug("Loading state from %s...", full_path.c_str());
+
+    ifstream stream;
+    open_ifstream_utf8(stream, full_path.c_str(), ios::in | ios::binary);
+
+    if (!stream.fail())
+    {
+        ret = LoadState(stream);
+
+        if (ret)
+            Log("Loaded state from %s", full_path.c_str());
+        else
+            Error("Failed to load state from %s", full_path.c_str());
+    }
+    else
+    {
+        Error("Load state file doesn't exist: %s", full_path.c_str());
+    }
+
+    stream.close();
+    return ret;
+}
+
+bool GeargrafxCore::LoadState(const u8* buffer, size_t size)
+{
+    using namespace std;
+
+    Debug("Loading state to buffer [%d bytes]...", size);
+
+    if (!m_media->IsReady())
+    {
+        Error("Cartridge is not ready when trying to load state");
+        return false;
+    }
+
+    if (!IsValidPointer(buffer) || (size == 0))
+    {
+        Error("Invalid load state buffer");
+        return false;
+    }
+
+    memory_input_stream direct_stream(reinterpret_cast<const char*>(buffer), size);
+    return LoadState(direct_stream);
+}
+
+bool GeargrafxCore::LoadState(std::istream& stream)
+{
+    using namespace std;
+
+    if (!m_media->IsReady())
+    {
+        Error("Cartridge is not ready when trying to load state");
+        return false;
+    }
+
+    GG_SaveState_Header_Libretro header = {};
+#if !defined(__LIBRETRO__)
+    bool is_desktop_savestate = false;
+#endif
+
+    stream.seekg(0, ios::end);
+    size_t size = static_cast<size_t>(stream.tellg());
+    size_t body_size = 0;
+
+    // Try desktop header first (larger, contains all info)
+    GG_SaveState_Header desktop_header;
+    if (size >= sizeof(desktop_header))
+    {
+        stream.seekg(size - sizeof(desktop_header), ios::beg);
+        stream.read(reinterpret_cast<char*> (&desktop_header), sizeof(desktop_header));
+
+        if (desktop_header.magic == GG_SAVESTATE_MAGIC)
+        {
+            header.magic = desktop_header.magic;
+            header.version = desktop_header.version;
+            if (desktop_header.screenshot_size <= size - sizeof(desktop_header))
+                body_size = size - sizeof(desktop_header) - desktop_header.screenshot_size;
+#if !defined(__LIBRETRO__)
+            is_desktop_savestate = true;
+#endif
+            Debug("Loading desktop save state");
+        }
+    }
+
+    // Fallback to libretro header
+    if ((header.magic != GG_SAVESTATE_MAGIC) && (size >= sizeof(header)))
+    {
+        stream.seekg(size - sizeof(header), ios::beg);
+        stream.read(reinterpret_cast<char*> (&header), sizeof(header));
+        body_size = size - sizeof(header);
+    }
+
+    stream.seekg(0, ios::beg);
+
+    Debug("Load state header magic: 0x%08x", header.magic);
+    Debug("Load state header version: %d", header.version);
+
+    if ((header.magic != GG_SAVESTATE_MAGIC))
+    {
+        Log("Invalid save state: 0x%08x", header.magic);
+        return false;
+    }
+
+    if (header.version < GG_SAVESTATE_MIN_VERSION || header.version > GG_SAVESTATE_VERSION)
+    {
+        Error("Invalid save state version: %d", header.version);
+        return false;
+    }
+
+    if (body_size == 0)
+    {
+        Error("Invalid save state size: %d", (int)size);
+        return false;
+    }
+
+    if ((header.version < 39) && m_cdrom_media->IsMmi())
+    {
+        Error("MMI save state version %u lacks required state", header.version);
+        return false;
+    }
+
+#if !defined(__LIBRETRO__)
+    if (is_desktop_savestate)
+    {
+        Debug("Load state header size: %d", desktop_header.size);
+        Debug("Load state header timestamp: %d", desktop_header.timestamp);
+        Debug("Load state header rom name: %s", desktop_header.rom_name);
+        Debug("Load state header rom crc: 0x%08x", desktop_header.rom_crc);
+        Debug("Load state header screenshot size: %d", desktop_header.screenshot_size);
+        Debug("Load state header screenshot width: %d", desktop_header.screenshot_width);
+        Debug("Load state header screenshot height: %d", desktop_header.screenshot_height);
+        Debug("Load state header screenshot width scale: %d", desktop_header.screenshot_width_scale);
+        Debug("Load state header emu build: %s", desktop_header.emu_build);
+
+        if (desktop_header.size != size)
+        {
+            Error("Invalid save state size: %d", desktop_header.size);
+            return false;
+        }
+
+        if (desktop_header.rom_crc != m_media->GetCRC())
+        {
+            Error("Invalid save state rom crc: 0x%08x", desktop_header.rom_crc);
+            return false;
+        }
+    }
+#endif
+
+    u8 cdrom_hardware_enabled = m_media->IsCDROM() ? 1 : 0;
+    if (header.version >= 38)
+        stream.read(reinterpret_cast<char*>(&cdrom_hardware_enabled), sizeof(cdrom_hardware_enabled));
+
+    if (stream.fail() || cdrom_hardware_enabled > 1 || (cdrom_hardware_enabled != (m_media->IsCDROMHardwareEnabled() ? 1 : 0)))
+    {
+        Error("Save state CD-ROM hardware configuration does not match");
+        return false;
+    }
+
+    if (header.version >= 41)
+    {
+        u32 content_crc = 0;
+        stream.read(reinterpret_cast<char*>(&content_crc), sizeof(content_crc));
+        if (stream.fail() || (content_crc != m_media->GetCRC()))
+        {
+            Error("Save state content CRC does not match");
+            return false;
+        }
+    }
+
+    Debug("Unserializing save state...");
+
+    if (header.version >= 27)
+        stream.read(reinterpret_cast<char*> (&m_master_clock_cycles), sizeof(m_master_clock_cycles));
+    else
+        m_master_clock_cycles = 0;
+
+    m_memory->LoadState(stream, header.version, body_size);
+    m_huc6202->LoadState(stream);
+    m_huc6260->LoadState(stream, header.version);
+    m_huc6270_1->LoadState(stream, header.version);
+    m_huc6270_2->LoadState(stream, header.version);
+    m_huc6280->LoadState(stream);
+    m_audio->LoadState(stream, header.version);
+
+    // Some v23 states lack the MB128 flag, try without it first so MB128 RAM is never loaded from misaligned data
+    streampos tail_position = stream.tellg();
+    bool loaded = LoadStateTail(stream, header.version, header.version > 23, body_size);
+
+    if (!loaded && (header.version == 23) && (tail_position != streampos(-1)))
+    {
+        stream.clear();
+        stream.seekg(tail_position);
+        loaded = LoadStateTail(stream, header.version, true, body_size);
+    }
+
+    if (!loaded)
+    {
+        Error("Failed to unserialize save state");
+        ResetMedia(true);
+        return false;
+    }
+
+    return true;
+}
+
+bool GeargrafxCore::LoadStateTail(std::istream& stream, u32 version, bool has_mb128_flag, size_t end)
+{
+    m_input->LoadState(stream, version, has_mb128_flag);
+
+    if (m_media->IsCDROMHardwareEnabled())
+    {
+        if (m_cdrom_media->IsMmi() && !m_media->IsLaserActive())
+        {
+            u32 index = 0;
+            bool ejected = false;
+            stream.read(reinterpret_cast<char*>(&index), sizeof(index));
+            stream.read(reinterpret_cast<char*>(&ejected), sizeof(ejected));
+            if (stream.fail())
+                return false;
+            if (index != m_cdrom_media->GetSelectedMmiMediaIndex() &&
+                (!m_cdrom_media->EjectMmi() || !m_cdrom_media->SelectMmiMedia(index)))
+                return false;
+            if (ejected)
+                m_cdrom_media->EjectMmi();
+            else
+                m_cdrom_media->InsertMmi();
+        }
+
+        m_cdrom->LoadState(stream, version);
+        m_scsi_controller->LoadState(stream, version);
+        if (stream.fail())
+            return false;
+        m_cdrom_audio->LoadState(stream, version);
+        m_adpcm->LoadState(stream, version);
+
+        if (m_media->IsLaserActive())
+        {
+            m_laseractive->LoadState(stream, version);
+            m_huc6260->LoadLaserActiveState(stream);
+        }
+    }
+
+    if (version >= 33)
+        m_random->LoadState(stream);
+
+    return !stream.fail() && (static_cast<size_t>(stream.tellg()) == end);
+}
+
+bool GeargrafxCore::GetSaveStateHeader(int index, const char* path, GG_SaveState_Header* header)
+{
+    using namespace std;
+
+    string full_path = GetSaveStatePath(path, index);
+    Debug("Loading state header from %s...", full_path.c_str());
+
+    ifstream stream;
+    open_ifstream_utf8(stream, full_path.c_str(), ios::in | ios::binary);
+
+    if (stream.fail())
+    {
+        Debug("ERROR: Savestate file doesn't exist %s", full_path.c_str());
+        stream.close();
+        return false;
+    }
+
+    stream.seekg(0, ios::end);
+    size_t savestate_size = static_cast<size_t>(stream.tellg());
+    stream.seekg(0, ios::beg);
+
+    if (savestate_size < sizeof(GG_SaveState_Header))
+    {
+        Error("Invalid save state file size: %zu", savestate_size);
+        stream.close();
+        return false;
+    }
+
+    stream.seekg(savestate_size - sizeof(GG_SaveState_Header), ios::beg);
+    stream.read(reinterpret_cast<char*> (header), sizeof(GG_SaveState_Header));
+    stream.seekg(0, ios::beg);
+
+    // for older versions of the save state whithout build in header
+    if (header->magic != GG_SAVESTATE_MAGIC)
+    {
+        stream.seekg(savestate_size - sizeof(GG_SaveState_Header) + 32, ios::beg);
+        stream.read(reinterpret_cast<char*> (header), sizeof(GG_SaveState_Header));
+        stream.seekg(0, ios::beg);
+
+        if (header->magic != GG_SAVESTATE_MAGIC)
+            return false;
+
+        header->size += 32;
+        header->emu_build[0] = 0;
+    }
+
+    return true;
+}
+
+bool GeargrafxCore::GetSaveStateScreenshot(int index, const char* path, GG_SaveState_Screenshot* screenshot)
+{
+    using namespace std;
+
+    if (!IsValidPointer(screenshot) || !IsValidPointer(screenshot->data) || (screenshot->size == 0))
+    {
+        Error("Invalid save state screenshot buffer");
+        return false;
+    }
+
+    string full_path = GetSaveStatePath(path, index);
+    Debug("Loading state screenshot from %s...", full_path.c_str());
+
+    ifstream stream;
+    open_ifstream_utf8(stream, full_path.c_str(), ios::in | ios::binary);
+
+    if (stream.fail())
+    {
+        Error("Savestate file doesn't exist %s", full_path.c_str());
+        stream.close();
+        return false;
+    }
+
+    GG_SaveState_Header header;
+
+    if (!GetSaveStateHeader(index, path, &header))
+    {
+        Error("Invalid save state header");
+        stream.close();
+        return false;
+    }
+
+    if (header.screenshot_size == 0)
+    {
+        Debug("No screenshot data");
+        stream.close();
+        return false;
+    }
+
+    if (screenshot->size < header.screenshot_size)
+    {
+        Error("Invalid screenshot buffer size %d < %d", screenshot->size, header.screenshot_size);
+        stream.close();
+        return false;
+    }
+
+    screenshot->size = header.screenshot_size;
+    screenshot->width = header.screenshot_width;
+    screenshot->height = header.screenshot_height;
+    screenshot->width_scale = header.screenshot_width_scale;
+
+    Debug("Screenshot size: %d bytes", screenshot->size);
+    Debug("Screenshot width: %d", screenshot->width);
+    Debug("Screenshot height: %d", screenshot->height);
+    Debug("Screenshot width scale: %d", screenshot->width_scale);
+
+    if (header.size < sizeof(header) + screenshot->size)
+    {
+        Error("Invalid screenshot offset");
+        stream.close();
+        return false;
+    }
+
+    stream.seekg(header.size - sizeof(header) - screenshot->size, ios::beg);
+    stream.read(reinterpret_cast<char*> (screenshot->data), screenshot->size);
+    stream.close();
+
+    return true;
+}
+
+void GeargrafxCore::Reset()
+{
+    m_media->RestoreRomCheats();
+
+    m_master_clock_cycles = 0;
+
+    if (IsValidPointer(m_profiler))
+        m_profiler->Reset();
+
+    m_paused = false;
+
+    m_media->GatherMediaInfo();
+
+    GG_Console_Type console_type = m_media->GetConsoleType();
+    bool force_backup_ram = m_media->IsBackupRAMForced();
+    bool is_sgx = m_media->IsSGX();
+    bool is_cdrom = m_media->IsCDROMHardwareEnabled();
+
+    SelectPSGRevision();
+    SelectADPCMClockSpeed();
+
+    bool pce_japanese = (console_type == GG_CONSOLE_PCE) || (console_type == GG_CONSOLE_SGX);
+    if (m_media->IsLaserActive())
+        pce_japanese = m_media->GetSelectedLaserActiveRegion() != GG_LASERACTIVE_REGION_US;
+    m_input->EnablePCEJap(pce_japanese);
+    m_input->EnableCDROM(is_cdrom || force_backup_ram);
+    m_memory->EnableBackupRam(is_cdrom || force_backup_ram);
+
+    m_memory->Reset();
+    m_huc6202->Reset(is_sgx);
+    m_huc6260->Reset();
+    m_huc6270_1->Reset();
+    m_huc6270_2->Reset();
+    m_huc6280->Reset();
+    m_cdrom->Reset();
+    m_scsi_controller->Reset();
+    m_cdrom_audio->Reset();
+    m_adpcm->Reset();
+    m_laseractive->Reset();
+    m_audio->Reset(is_cdrom);
+    m_input->Reset();
+
+    EnableMB128(m_mb128_mode);
+
+    m_media->ApplyRomCheats();
+}
+
+void GeargrafxCore::EnableMB128(GG_MB128_Mode mode)
+{
+    m_mb128_mode = mode;
+    bool enable = false;
+
+    switch (mode)
+    {
+        case GG_MB128_AUTO:
+            enable = m_media->IsMB128();
+            break;
+        case GG_MB128_ENABLED:
+            enable = true;
+            break;
+        case GG_MB128_DISABLED:
+            enable = false;
+            break;
+    }
+
+    m_input->EnableMB128(enable);
+}

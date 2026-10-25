@@ -1,0 +1,1361 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#ifndef HUC6280_INLINE_H
+#define HUC6280_INLINE_H
+
+#include <string.h>
+#include "huc6280.h"
+#include "huc6280_timing.h"
+#include "huc6280_names.h"
+#include "huc6270.h"
+#include "memory.h"
+#include "trace_logger.h"
+#include "profiler.h"
+#include "rondo_trace.h"
+
+INLINE void HuC6280::TraceCpuEvent()
+{
+    if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEnabled(TRACE_CPU))
+        LogCpuEvent();
+}
+
+INLINE void HuC6280::TraceCpuIrqEvent(u16 pc, u16 vector)
+{
+    if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEnabled(TRACE_CPU_IRQ))
+        LogCpuIrqEvent(pc, vector);
+}
+
+INLINE void HuC6280::TraceTimerEvent(u8 event, u8 value)
+{
+    if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEventEnabled(TRACE_TIMER, event))
+        LogTimerEvent(event, value);
+}
+
+INLINE void HuC6280::TraceSystemInterruptEvent(u8 event, u16 address, u8 raw)
+{
+    if (IsValidPointer(m_trace_logger) && m_trace_logger->IsEventEnabled(TRACE_SYSTEM, event))
+        LogSystemInterruptEvent(event, address, raw);
+}
+
+INLINE u32 HuC6280::RunInstruction(bool* instruction_completed)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    m_memory_breakpoint_hit = false;
+    m_cpu_breakpoint_hit = false;
+    m_debug_brk_breakpoint_hit = false;
+    m_breakpoint_hit_address_valid = false;
+    m_prev_opcode_address = m_PC.GetValue();
+#endif
+
+    m_transfer_flag = IsSetFlag(FLAG_TRANSFER);
+#if !defined(GG_TESTING)
+    ClearFlag(FLAG_TRANSFER);
+#endif
+    m_cycles = 0;
+    m_clocked_master_cycles = 0;
+    m_extra_master_cycles = 0;
+
+    TraceCpuEvent();
+
+    rondo_trace_instruction(m_memory, m_PC.GetValue());
+
+    u8 opcode = Fetch8();
+    m_cycles += k_huc6280_opcode_cycles[opcode];
+
+    CheckIRQs();
+
+    m_opcodes[opcode](this);
+
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    if (IsValidPointer(instruction_completed))
+        *instruction_completed = (m_transfer_state == 0);
+#else
+    UNUSED(instruction_completed);
+#endif
+
+    if((m_irq_pending || IS_SET_BIT(m_interrupt_request_register, 2)) && (m_transfer_state == 0))
+        HandleIRQ();
+
+    DisassembleNextOPCode();
+
+    return (m_cycles * k_huc6280_speed_divisor[m_speed]) + m_extra_master_cycles;
+}
+
+INLINE u32 HuC6280::XlatInstruction(u16 pc, u8 opcode, const u8* ops)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    m_memory_breakpoint_hit = false;
+    m_cpu_breakpoint_hit = false;
+    m_debug_brk_breakpoint_hit = false;
+    m_breakpoint_hit_address_valid = false;
+    m_prev_opcode_address = pc;
+#endif
+
+    m_transfer_flag = IsSetFlag(FLAG_TRANSFER);
+    ClearFlag(FLAG_TRANSFER);
+    m_cycles = 0;
+    m_clocked_master_cycles = 0;
+    m_extra_master_cycles = 0;
+
+    TraceCpuEvent();
+
+    m_PC.SetValue(pc + 1);
+    m_cycles += k_huc6280_opcode_cycles[opcode];
+
+    CheckIRQs();
+
+    m_xops = ops;
+    m_opcodes[opcode](this);
+    m_xops = NULL;
+
+    if((m_irq_pending || IS_SET_BIT(m_interrupt_request_register, 2)) && (m_transfer_state == 0))
+        HandleIRQ();
+
+    DisassembleNextOPCode();
+
+    return (m_cycles * k_huc6280_speed_divisor[m_speed]) + m_extra_master_cycles;
+}
+
+inline void HuC6280::HandleIRQ()
+{
+    u16 vector = 0;
+
+    // TIQ
+    if (IS_SET_BIT(m_irq_pending, 2) && IS_SET_BIT(m_interrupt_request_register, 2))
+        vector = 0xFFFA;
+    // IRQ1
+    else if (IS_SET_BIT(m_irq_pending, 1))
+        vector = 0xFFF8;
+    // IRQ2
+    else if (IS_SET_BIT(m_irq_pending, 0))
+        vector = 0xFFF6;
+    else
+        return;
+
+    u16 pc = m_PC.GetValue();
+    StackPush16(pc);
+    StackPush8(m_P.GetValue() & ~FLAG_BREAK);
+    SetFlag(FLAG_INTERRUPT);
+    ClearFlag(FLAG_DECIMAL | FLAG_TRANSFER);
+
+    m_PC.SetLow(m_memory->Read(vector));
+    m_PC.SetHigh(m_memory->Read(vector + 1));
+
+    m_cycles += 8;
+
+    TraceCpuIrqEvent(pc, vector);
+
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    m_debug_next_irq =((0xFFFA - vector) >> 1) + 3;
+    u16 dest = m_PC.GetValue();
+    PushCallStack(pc, dest, pc, m_memory->GetBank(dest), true);
+#endif
+}
+
+INLINE void HuC6280::CheckIRQs()
+{
+    m_irq_pending = IsSetFlag(FLAG_INTERRUPT) ? 0 : m_interrupt_request_register & ~m_interrupt_disable_register;
+}
+
+INLINE void HuC6270::QueueMemoryRead()
+{
+    m_pending_memory_read = true;
+    m_transfer_delay = GetCpuVramReadDelay();
+    UpdateCpuVramBusyStatus();
+}
+
+INLINE void HuC6270::QueueMemoryWrite()
+{
+    m_pending_memory_write = true;
+    m_transfer_delay = GetCpuVramWriteDelay();
+    UpdateCpuVramBusyStatus();
+}
+
+INLINE s32 HuC6270::CurrentHClock()
+{
+    return *m_huc6260->GetState()->HPOS;
+}
+
+INLINE s32 HuC6270::DotsToClocks(s32 dots)
+{
+    return dots * m_huc6260->GetClockDivider();
+}
+
+INLINE void HuC6280::SetHardwareClock(GG_Clock_Hardware_Fn clock_fn, void* context)
+{
+    m_clock_hardware_fn = clock_fn;
+    m_clock_hardware_context = context;
+}
+
+INLINE u32 HuC6280::OverclockCycles(u32 master_cycles)
+{
+    if (likely(m_overclock_ratio == 0))
+        return master_cycles;
+
+    m_overclock_fraction += master_cycles * m_overclock_ratio;
+    u32 cycles = m_overclock_fraction >> 16;
+    m_overclock_fraction &= 0xFFFF;
+    return cycles;
+}
+
+INLINE u32 HuC6280::GetClockedMasterCycles() const
+{
+    return m_clocked_master_cycles;
+}
+
+INLINE void HuC6280::ClockHardwareCycles(u32 master_cycles)
+{
+    if (master_cycles == 0)
+        return;
+
+    assert(IsValidPointer(m_clock_hardware_fn));
+
+    m_clock_hardware_fn(m_clock_hardware_context, OverclockCycles(master_cycles));
+    m_clocked_master_cycles += master_cycles;
+
+    CheckIRQs();
+}
+
+INLINE void HuC6280::ClockCountedCycles(unsigned int cycles)
+{
+    ClockHardwareCycles(cycles * k_huc6280_speed_divisor[m_speed]);
+}
+
+INLINE void HuC6280::ClockPendingCycles()
+{
+    u32 target = (m_cycles * k_huc6280_speed_divisor[m_speed]) + m_extra_master_cycles;
+
+    if (target > m_clocked_master_cycles)
+        ClockHardwareCycles(target - m_clocked_master_cycles);
+}
+
+INLINE void HuC6280::StallFastCycle()
+{
+    m_extra_master_cycles += 3;
+    ClockHardwareCycles(3);
+}
+
+INLINE void HuC6280::AssertIRQ1(bool asserted)
+{
+    if (asserted)
+        m_interrupt_request_register = SET_BIT(m_interrupt_request_register, 1);
+    else
+        m_interrupt_request_register = UNSET_BIT(m_interrupt_request_register, 1);
+}
+
+INLINE void HuC6280::AssertIRQ2(bool asserted)
+{
+    if (asserted)
+    {
+        m_interrupt_request_register = SET_BIT(m_interrupt_request_register, 0);
+    }
+    else
+        m_interrupt_request_register = UNSET_BIT(m_interrupt_request_register, 0);
+}
+
+INLINE void HuC6280::InjectCycles(unsigned int cycles)
+{
+    m_cycles += cycles;
+    ClockHardwareCycles(cycles * k_huc6280_speed_divisor[m_speed]);
+}
+
+INLINE u8 HuC6280:: ReadInterruptRegister(u16 address)
+{
+    if ((address & 1) == 0)
+        return m_interrupt_disable_register;
+    else
+        return m_interrupt_request_register;
+}
+
+INLINE void HuC6280::WriteInterruptRegister(u16 address, u8 value)
+{
+    if ((address & 1) == 0)
+    {
+        TraceSystemInterruptEvent(TRACE_SYSTEM_IRQ_MASK_WRITE, address, value);
+        m_interrupt_disable_register = value & 0x07;
+    }
+    else
+    {
+        // Acknowledge TIQ
+        TraceSystemInterruptEvent(TRACE_SYSTEM_IRQ_ACK, address, value);
+        m_interrupt_request_register = UNSET_BIT(m_interrupt_request_register, 2);
+    }
+}
+
+INLINE void HuC6280::ClockTimer(u32 cycles)
+{
+    if (!m_timer_enabled)
+        return;
+
+    m_timer_cycles -= cycles;
+
+    if (m_timer_cycles <= 0)
+    {
+        m_timer_cycles = k_huc6280_timer_divisor + m_timer_cycles;
+        if (m_timer_counter == 0)
+        {
+            m_timer_counter = m_timer_reload;
+            m_interrupt_request_register = SET_BIT(m_interrupt_request_register, 2);
+            TraceTimerEvent(TRACE_TIMER_IRQ_REQUEST, 0);
+        }
+        else
+            m_timer_counter--;
+    }
+}
+
+INLINE u8 HuC6280::ReadTimerRegister()
+{
+    if(m_timer_counter == 0 && m_timer_cycles <= 5 * 3)
+        return 0x7F;
+    else
+        return m_timer_counter;
+}
+
+INLINE void HuC6280::WriteTimerRegister(u16 address, u8 value)
+{
+    if (address & 0x01)
+    {
+        bool enabled = (value & 0x01);
+        if (m_timer_enabled != enabled)
+        {
+            m_timer_enabled = enabled;
+            m_timer_cycles = k_huc6280_timer_divisor;
+            if (enabled)
+                m_timer_counter = m_timer_reload;
+        }
+        TraceTimerEvent(TRACE_TIMER_CONTROL_WRITE, value);
+    }
+    else
+    {
+        m_timer_reload = value & 0x7F;
+        TraceTimerEvent(TRACE_TIMER_RELOAD_WRITE, value);
+    }
+}
+
+INLINE u8 HuC6280::Fetch8()
+{
+    u8 value;
+    if (m_xops)
+        value = *m_xops++;
+    else
+        value = m_memory->Read(m_PC.GetValue());
+    m_PC.Increment();
+    return value;
+}
+
+INLINE u16 HuC6280::Fetch16()
+{
+    u16 pc = m_PC.GetValue();
+    u8 l, h;
+    if (m_xops)
+    {
+        l = m_xops[0];
+        h = m_xops[1];
+        m_xops += 2;
+    }
+    else
+    {
+        l = m_memory->Read(pc);
+        h = m_memory->Read(pc + 1);
+    }
+    m_PC.SetValue(pc + 2);
+    return Address16(h , l);
+}
+
+INLINE u16 HuC6280::Address16(u8 high, u8 low)
+{
+    return static_cast<u16>(high << 8 ) | low;
+}
+
+INLINE u16 HuC6280::ZeroPageX()
+{
+    return ZERO_PAGE_ADDR | m_X.GetValue();
+}
+
+INLINE void HuC6280::SetOrClearZNFlags(u8 result)
+{
+    ClearFlag(FLAG_ZERO | FLAG_NEGATIVE);
+    m_P.SetValue(m_P.GetValue() | m_zn_flags_lut[result]);
+}
+
+INLINE void HuC6280::SetZNFlags(u8 result)
+{
+    m_P.SetValue(m_P.GetValue() | m_zn_flags_lut[result]);
+}
+
+INLINE void HuC6280::SetFlag(u8 flag)
+{
+    m_P.SetValue(m_P.GetValue() | flag);
+}
+
+INLINE void HuC6280::ClearFlag(u8 flag)
+{
+    m_P.SetValue(m_P.GetValue() & (~flag));
+}
+
+INLINE bool HuC6280::IsSetFlag(u8 flag)
+{
+    return (m_P.GetValue() & flag) != 0;
+}
+
+INLINE bool HuC6280::IsNotSetFlag(u8 flag)
+{
+    return (m_P.GetValue() & flag) == 0;
+}
+
+INLINE void HuC6280::SetP(u8 value)
+{
+#if defined(GG_TESTING)
+    m_P.SetValue((value & 0xEF) | FLAG_TRANSFER);
+#else
+    m_P.SetValue(value & 0xEF);
+#endif
+}
+
+INLINE void HuC6280::StackPush16(u16 value)
+{
+    m_memory->Write(STACK_ADDR | m_S.GetValue(), static_cast<u8>(value >> 8));
+    m_S.Decrement();
+    m_memory->Write(STACK_ADDR | m_S.GetValue(), static_cast<u8>(value & 0x00FF));
+    m_S.Decrement();
+}
+
+INLINE void HuC6280::StackPush8(u8 value)
+{
+    m_memory->Write(STACK_ADDR | m_S.GetValue(), value);
+    m_S.Decrement();
+}
+
+INLINE u16 HuC6280::StackPop16()
+{
+    m_S.Increment();
+    u8 l = m_memory->Read(STACK_ADDR | m_S.GetValue());
+    m_S.Increment();
+    u8 h = m_memory->Read(STACK_ADDR | m_S.GetValue());
+    return Address16(h , l);
+}
+
+INLINE u8 HuC6280::StackPop8()
+{
+    m_S.Increment();
+    return m_memory->Read(STACK_ADDR | m_S.GetValue());
+}
+
+INLINE u8 HuC6280::ImmediateAddressing()
+{
+    return Fetch8();
+}
+
+INLINE u16 HuC6280::ZeroPageAddressing()
+{
+    return ZERO_PAGE_ADDR | Fetch8();
+}
+
+INLINE u16 HuC6280::ZeroPageAddressing(EightBitRegister* reg)
+{
+    return ZERO_PAGE_ADDR | ((Fetch8() + reg->GetValue()) & 0xFF);
+}
+
+INLINE u16 HuC6280::ZeroPageIndirectAddressing()
+{
+    u16 address = ZeroPageAddressing();
+    u8 l = m_memory->Read(address);
+    u8 h = m_memory->Read((address + 1) & 0x20FF);
+    return Address16(h, l);
+}
+
+INLINE u16 HuC6280::ZeroPageIndexedIndirectAddressing()
+{
+    u16 address = (ZeroPageAddressing() + m_X.GetValue()) & 0x20FF;
+    u8 l = m_memory->Read(address);
+    u8 h = m_memory->Read((address + 1) & 0x20FF);
+    return Address16(h, l);
+}
+
+INLINE u16 HuC6280::ZeroPageIndirectIndexedAddressing()
+{
+    u16 address = ZeroPageAddressing();
+    u8 l = m_memory->Read(address);
+    u8 h = m_memory->Read((address + 1) & 0x20FF);
+    return Address16(h, l) + m_Y.GetValue();
+}
+
+INLINE s8 HuC6280::RelativeAddressing()
+{
+    return static_cast<s8>(Fetch8());
+}
+
+INLINE u16 HuC6280::AbsoluteAddressing()
+{
+    return Fetch16();
+}
+
+INLINE u16 HuC6280::AbsoluteAddressing(EightBitRegister* reg)
+{
+    u16 address = Fetch16();
+    u16 result = address + reg->GetValue();
+    return result;
+}
+
+INLINE u16 HuC6280::AbsoluteIndirectAddressing()
+{
+    u16 address = Fetch16();
+    u8 l = m_memory->Read(address);
+    u8 h = m_memory->Read(address + 1);
+    return Address16(h, l);
+}
+
+INLINE u16 HuC6280::AbsoluteIndexedIndirectAddressing()
+{
+    u16 address = Fetch16() + m_X.GetValue();
+    u8 l = m_memory->Read(address);
+    u8 h = m_memory->Read(address + 1);
+    return Address16(h, l);
+}
+
+INLINE bool HuC6280::BreakpointHit()
+{
+    return (m_cpu_breakpoint_hit || m_memory_breakpoint_hit || m_debug_brk_breakpoint_hit);
+}
+
+INLINE bool HuC6280::GetBreakpointHitAddress(u16* address)
+{
+    if (!m_breakpoint_hit_address_valid)
+        return false;
+
+    *address = m_breakpoint_hit_address;
+    return true;
+}
+
+INLINE bool HuC6280::MemoryBreakpointHit()
+{
+    return m_memory_breakpoint_hit;
+}
+
+INLINE bool HuC6280::RunToBreakpointHit()
+{
+    return m_run_to_breakpoint_hit;
+}
+
+INLINE void HuC6280::SetDebugBRK(bool enable, u8 value, bool trigger_irq)
+{
+    m_debug_brk_enabled = enable;
+    m_debug_brk_value = value;
+    m_debug_brk_trigger_irq = trigger_irq;
+}
+
+INLINE void HuC6280::SetBreakpointHitAddress(u16 address)
+{
+    m_breakpoint_hit_address_valid = true;
+    m_breakpoint_hit_address = address;
+}
+
+INLINE const std::vector<HuC6280::GG_Breakpoint>* HuC6280::GetBreakpoints() const
+{
+    return &m_breakpoints;
+}
+
+INLINE bool HuC6280::HasPhysicalMemoryBreakpoints(bool read) const
+{
+    return m_breakpoints_enabled &&
+        m_physical_breakpoint_cache[read ? HuC6280_BREAKPOINT_ACCESS_READ : HuC6280_BREAKPOINT_ACCESS_WRITE];
+}
+
+INLINE bool HuC6280::HasMemoryBreakpoints(int type, bool read) const
+{
+    if (!m_breakpoints_enabled || type < 0 || type >= HuC6280_BREAKPOINT_TYPE_COUNT)
+        return false;
+
+    return m_breakpoint_cache[type][read ? HuC6280_BREAKPOINT_ACCESS_READ : HuC6280_BREAKPOINT_ACCESS_WRITE];
+}
+
+INLINE bool HuC6280::HasPhysicalExecuteBreakpoints() const
+{
+    return m_breakpoints_enabled && m_physical_breakpoint_cache[HuC6280_BREAKPOINT_ACCESS_EXECUTE];
+}
+
+INLINE bool HuC6280::HasMemoryHooks(bool read) const
+{
+    return m_memory_hook_cache[read ? HuC6280_BREAKPOINT_ACCESS_READ : HuC6280_BREAKPOINT_ACCESS_WRITE];
+}
+
+INLINE void HuC6280::CheckCpuAddressHooks(u16 address, bool read)
+{
+    if (m_vblank_watch[read ? HuC6280_BREAKPOINT_ACCESS_READ : HuC6280_BREAKPOINT_ACCESS_WRITE] &&
+        (address == m_vblank_watch_address))
+        m_vblank_watch_hit = true;
+
+    GG_CHECK_MEMORY_BREAKPOINT(this, HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS, address, read);
+}
+
+INLINE u16 HuC6280::GetVBlankWatchAddress() const
+{
+    return m_vblank_watch_address;
+}
+
+INLINE bool HuC6280::GetVBlankWatchAccess(bool read) const
+{
+    return m_vblank_watch[read ? HuC6280_BREAKPOINT_ACCESS_READ : HuC6280_BREAKPOINT_ACCESS_WRITE];
+}
+
+INLINE std::stack<HuC6280::GG_CallStackEntry>* HuC6280::GetDisassemblerCallStack()
+{
+    return &m_disassembler_call_stack;
+}
+
+INLINE void HuC6280::PushCallStack(u16 src, u16 dest, u16 back, u8 bank, bool irq)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    GG_CallStackEntry entry;
+    entry.src = src;
+    entry.dest = dest;
+    entry.back = back;
+    entry.bank = bank;
+    if (m_disassembler_call_stack.size() < 256)
+        m_disassembler_call_stack.push(entry);
+
+    if (unlikely(m_profiler->IsEnabled()))
+        ProfilerEnter(dest, irq);
+#else
+    UNUSED(src);
+    UNUSED(dest);
+    UNUSED(back);
+    UNUSED(bank);
+    UNUSED(irq);
+#endif
+}
+
+INLINE void HuC6280::PopCallStack(u8 stack_bytes)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    if (!m_disassembler_call_stack.empty())
+        m_disassembler_call_stack.pop();
+
+    if (unlikely(m_profiler->IsEnabled()))
+        m_profiler->Return((u8)(m_S.GetValue() - stack_bytes), GetPendingMasterCycles());
+#else
+    UNUSED(stack_bytes);
+#endif
+}
+
+INLINE u32 HuC6280::GetPendingMasterCycles()
+{
+    u32 target = (m_cycles * k_huc6280_speed_divisor[m_speed]) + m_extra_master_cycles;
+    return (target > m_clocked_master_cycles) ? target - m_clocked_master_cycles : 0;
+}
+
+INLINE void HuC6280::CheckBreakpoints()
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+
+    m_cpu_breakpoint_hit = (m_breakpoints_irq_enabled && m_debug_next_irq > 0);
+    m_run_to_breakpoint_hit = false;
+
+    if (m_run_to_breakpoint_requested)
+    {
+        if (m_PC.GetValue() == m_run_to_breakpoint.address1)
+        {
+            m_run_to_breakpoint_hit = true;
+            m_run_to_breakpoint_requested = false;
+            return;
+        }
+    }
+
+    if (!m_breakpoints_enabled)
+        return;
+
+    u16 pc = m_PC.GetValue();
+    bool has_physical_execute_breakpoints = HasPhysicalExecuteBreakpoints();
+    bool rom_execute_valid = false;
+    bool card_ram_execute_valid = false;
+    bool cdrom_ram_execute_valid = false;
+    u32 rom_execute_address = 0;
+    u32 card_ram_execute_address = 0;
+    u32 cdrom_ram_execute_address = 0;
+
+    if (has_physical_execute_breakpoints)
+    {
+        bool has_rom_execute_breakpoints = m_breakpoint_cache[HuC6280_BREAKPOINT_TYPE_ROM][HuC6280_BREAKPOINT_ACCESS_EXECUTE];
+        bool has_card_ram_execute_breakpoints = m_breakpoint_cache[HuC6280_BREAKPOINT_TYPE_CARD_RAM][HuC6280_BREAKPOINT_ACCESS_EXECUTE];
+        bool has_cdrom_ram_execute_breakpoints = m_breakpoint_cache[HuC6280_BREAKPOINT_TYPE_CDROM_RAM][HuC6280_BREAKPOINT_ACCESS_EXECUTE];
+
+        if (has_rom_execute_breakpoints || has_card_ram_execute_breakpoints || has_cdrom_ram_execute_breakpoints)
+        {
+            u8 bank = m_memory->GetBank(pc);
+            u16 offset = pc & 0x1FFF;
+            Memory::MemoryBankType bank_type = m_memory->GetBankType(bank);
+
+            if (has_rom_execute_breakpoints && bank_type == Memory::MEMORY_BANK_TYPE_ROM)
+                rom_execute_valid = m_memory->GetROMPhysicalAddress(bank, offset, rom_execute_address);
+
+            if (has_card_ram_execute_breakpoints && bank_type == Memory::MEMORY_BANK_TYPE_CARD_RAM)
+            {
+                int size = m_memory->GetCardRAMSize();
+                if (size > 0)
+                {
+                    card_ram_execute_address = ((bank - m_memory->GetCardRAMStart()) * 0x2000) + offset;
+                    card_ram_execute_address %= size;
+                    card_ram_execute_valid = true;
+                }
+            }
+
+            if (has_cdrom_ram_execute_breakpoints && bank_type == Memory::MEMORY_BANK_TYPE_CDROM_RAM)
+            {
+                cdrom_ram_execute_address = ((bank - 0x80) * 0x2000) + offset;
+                cdrom_ram_execute_valid = true;
+            }
+        }
+    }
+
+    for (int i = 0; i < (int)m_breakpoints.size(); i++)
+    {
+        GG_Breakpoint* brk = &m_breakpoints[i];
+
+        if (!brk->enabled)
+            continue;
+        if (!brk->execute)
+            continue;
+
+        u32 address = 0;
+        bool valid = false;
+
+        if (brk->type == HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS)
+        {
+            address = pc;
+            valid = true;
+        }
+        else if (!has_physical_execute_breakpoints)
+            continue;
+        else
+            switch (brk->type)
+            {
+                case HuC6280_BREAKPOINT_TYPE_ROM:
+                {
+                    address = rom_execute_address;
+                    valid = rom_execute_valid;
+                    break;
+                }
+                case HuC6280_BREAKPOINT_TYPE_CARD_RAM:
+                {
+                    address = card_ram_execute_address;
+                    valid = card_ram_execute_valid;
+                    break;
+                }
+                case HuC6280_BREAKPOINT_TYPE_CDROM_RAM:
+                {
+                    address = cdrom_ram_execute_address;
+                    valid = cdrom_ram_execute_valid;
+                    break;
+                }
+                default:
+                    break;
+            }
+
+        if (valid && BreakpointAddressMatches(brk, address))
+        {
+            m_cpu_breakpoint_hit = true;
+            m_run_to_breakpoint_requested = false;
+            return;
+        }
+    }
+
+#endif
+}
+
+INLINE bool HuC6280::BreakpointAddressMatches(GG_Breakpoint* brk, u32 address)
+{
+    if (brk->range)
+        return address >= brk->address1 && address <= brk->address2;
+
+    return address == brk->address1;
+}
+
+INLINE void HuC6280::DisassembleNextOPCode()
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+
+    CheckBreakpoints();
+
+    u16 address = m_PC.GetValue();
+    GG_Disassembler_Record* record = m_memory->GetOrCreateDisassemblerRecord(address);
+
+    assert(IsValidPointer(record));
+
+    u8 opcode = 0;
+    if (!m_memory->TryPeek(address, &opcode))
+    {
+        InvalidateOverlappingRecords(address, record->size > 0 ? record->size : 1);
+        PopulateUnavailableDisassemblerRecord(record, address);
+        return;
+    }
+
+    u8 opcode_size = k_huc6280_opcode_sizes[opcode];
+
+    bool changed = (record->opcodes[0] != opcode);
+    record->opcodes[0] = opcode;
+
+    for (int i = 1; i < opcode_size; i++)
+    {
+        u8 mem_byte = 0;
+        if (!m_memory->TryPeek(address + i, &mem_byte))
+        {
+            InvalidateOverlappingRecords(address, record->size > 0 ? record->size : 1);
+            PopulateUnavailableDisassemblerRecord(record, address);
+            return;
+        }
+
+        if (record->opcodes[i] != mem_byte)
+        {
+            changed = true;
+            record->opcodes[i] = mem_byte;
+        }
+    }
+
+    if (!changed && record->size != 0)
+    {
+        bool refresh_context = false;
+
+        if (record->jump)
+        {
+            u16 jump_address = record->jump_address;
+            GG_OPCode_Type type = k_huc6280_opcode_names[record->opcodes[0]].type;
+            if (type == GG_OPCode_Type_1b_Relative)
+                jump_address = address + record->size + (s8)record->opcodes[1];
+            else if (type == GG_OPCode_Type_1b_1b_Relative)
+                jump_address = address + record->size + (s8)record->opcodes[2];
+
+            u8 jump_bank = m_memory->GetBank(jump_address);
+            refresh_context = jump_address != record->jump_address ||
+                jump_bank != record->jump_bank;
+        }
+
+        if (refresh_context || m_debug_next_irq > 0)
+        {
+            if (m_debug_next_irq == 0)
+                m_debug_next_irq = record->irq;
+            PopulateDisassemblerRecord(record, opcode, address);
+        }
+        else if (!record->jump && record->has_operand_address)
+        {
+            record->operand_bank = m_memory->GetBank(record->operand_is_zp ?
+                (0x2000 | record->operand_address) : record->operand_address);
+        }
+        return;
+    }
+
+    InvalidateOverlappingRecords(address, opcode_size);
+
+    PopulateDisassemblerRecord(record, opcode, address);
+#endif
+}
+
+INLINE void HuC6280::InvalidateOverlappingRecords(u16 address, u8 opcode_size)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    for (int back = 1; back < 7; ++back)
+    {
+        int prev_start = (int)address - back;
+        if (prev_start < 0)
+            continue;
+
+        GG_Disassembler_Record* prev = m_memory->GetDisassemblerRecord(prev_start);
+        if (!IsValidPointer(prev) || prev->size == 0)
+            continue;
+
+        int distance = address - prev_start;
+        if (prev->size > distance)
+        {
+            prev->size = 0;
+            prev->name[0] = 0;
+            prev->bytes[0] = 0;
+        }
+    }
+
+    if (opcode_size > 1)
+    {
+        for (int fwd = 1; fwd < opcode_size; ++fwd)
+        {
+            u16 fwd_addr = address + fwd;
+            GG_Disassembler_Record* fwd_record = m_memory->GetDisassemblerRecord(fwd_addr);
+            if (!IsValidPointer(fwd_record) || fwd_record->size == 0)
+                continue;
+
+            fwd_record->size = 0;
+            fwd_record->name[0] = 0;
+            fwd_record->bytes[0] = 0;
+        }
+    }
+#else
+    UNUSED(address);
+    UNUSED(opcode_size);
+#endif
+}
+
+INLINE void HuC6280::SetDisassemblerOperandText(GG_Disassembler_Record* record, const char* text)
+{
+    if (!IsValidPointer(text) || (text[0] == 0))
+        return;
+
+    const char* match = record->name;
+    const char* last_match = NULL;
+    while ((match = strstr(match, text)) != NULL)
+    {
+        last_match = match;
+        match++;
+    }
+
+    if (IsValidPointer(last_match))
+    {
+        record->operand_offset = (int)(last_match - record->name);
+        record->operand_length = (int)strlen(text);
+    }
+}
+
+INLINE void HuC6280::SetDisassemblerOperand(GG_Disassembler_Record* record, u16 address, bool is_zp, const char* text)
+{
+    record->has_operand_address = true;
+    record->operand_address = address;
+    record->operand_is_zp = is_zp;
+    record->operand_bank = m_memory->GetBank(is_zp ? (0x2000 | address) : address);
+    SetDisassemblerOperandText(record, text);
+}
+
+INLINE void HuC6280::PopulateUnavailableDisassemblerRecord(GG_Disassembler_Record* record, u16 address)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    record->bank = m_memory->GetBank(address);
+    strncpy_fit(record->name, "????", sizeof(record->name));
+    strncpy_fit(record->bytes, "?? ", sizeof(record->bytes));
+    record->size = 1;
+    record->opcodes[0] = 0xFF;
+    for (int i = 1; i < 7; i++)
+        record->opcodes[i] = 0;
+    record->jump = false;
+    record->jump_address = 0;
+    record->jump_bank = 0;
+    record->subroutine = false;
+    record->irq = 0;
+    record->has_operand_address = false;
+    record->operand_address = 0;
+    record->operand_is_zp = false;
+    record->operand_bank = 0;
+    record->operand_offset = 0;
+    record->operand_length = 0;
+
+    if (m_debug_next_irq > 0)
+    {
+        record->irq = m_debug_next_irq;
+        m_debug_next_irq = 0;
+    }
+
+    if (record->irq > 0 && record->irq < 6)
+    {
+        static const char* k_irq_auto_symbol_format[6] = {
+            "????_%02X_%04X", "RESET_%02X_%04X", "NMI_%02X_%04X",
+            "TIMER_IRQ_%02X_%04X", "IRQ1_%02X_%04X", "IRQ2_BRK_%02X_%04X"
+        };
+        snprintf(record->auto_symbol, 64, k_irq_auto_symbol_format[record->irq], record->bank, address);
+    }
+
+    SetDisassemblerRecordSegment(record);
+#else
+    UNUSED(record);
+    UNUSED(address);
+#endif
+}
+
+INLINE void HuC6280::PopulateDisassemblerRecord(GG_Disassembler_Record* record, u8 opcode, u16 address)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    u8 opcode_size = k_huc6280_opcode_sizes[opcode];
+
+    record->bank = m_memory->GetBank(address);
+    record->name[0] = 0;
+    record->bytes[0] = 0;
+    record->segment[0] = 0;
+    record->size = opcode_size;
+    record->jump = false;
+    record->jump_address = 0;
+    record->jump_bank = 0;
+    record->subroutine = false;
+    record->irq = 0;
+    record->has_operand_address = false;
+    record->operand_address = 0;
+    record->operand_is_zp = false;
+    record->operand_bank = 0;
+    record->operand_offset = 0;
+    record->operand_length = 0;
+
+    if (m_debug_next_irq > 0)
+    {
+        record->irq = m_debug_next_irq;
+        m_debug_next_irq = 0;
+    }
+
+    int pos = 0;
+    for (int i = 0; i < opcode_size; i++)
+    {
+        static const char hex_chars[] = "0123456789ABCDEF";
+        u8 byte = record->opcodes[i];
+        record->bytes[pos++] = hex_chars[byte >> 4];
+        record->bytes[pos++] = hex_chars[byte & 0x0F];
+        record->bytes[pos++] = ' ';
+    }
+    record->bytes[pos] = 0;
+
+    u8 op1 = record->opcodes[1];
+    u8 op2 = record->opcodes[2];
+    const char* format = k_huc6280_opcode_names[opcode].name[m_disassembler_syntax];
+
+    switch (k_huc6280_opcode_names[opcode].type)
+    {
+        case GG_OPCode_Type_Implied:
+        {
+            snprintf(record->name, 64, "%s", format);
+            break;
+        }
+        case GG_OPCode_Type_1b:
+        {
+            bool has_address = !strstr(k_huc6280_opcode_names[opcode].name[GG_Disassembler_Syntax_Geargrafx], "#$");
+            snprintf(record->name, 64, format, op1);
+            if (has_address)
+            {
+                char operand_text[8];
+                snprintf(operand_text, sizeof(operand_text), "$%02X", op1);
+                SetDisassemblerOperand(record, op1, true, operand_text);
+                if (record->operand_length == 0)
+                {
+                    snprintf(operand_text, sizeof(operand_text), "%02X", op1);
+                    SetDisassemblerOperandText(record, operand_text);
+                }
+            }
+            break;
+        }
+        case GG_OPCode_Type_1b_1b:
+        {
+            snprintf(record->name, 64, format, op1, op2);
+            break;
+        }
+        case GG_OPCode_Type_1b_2b:
+        {
+            u16 operand = op2 | (record->opcodes[3] << 8);
+            snprintf(record->name, 64, format, op1, operand);
+            char operand_text[8];
+            snprintf(operand_text, sizeof(operand_text), "$%04X", operand);
+            SetDisassemblerOperand(record, operand, false, operand_text);
+            break;
+        }
+        case GG_OPCode_Type_2b:
+        {
+            u16 operand = op1 | (op2 << 8);
+            snprintf(record->name, 64, format, operand);
+            char operand_text[8];
+            snprintf(operand_text, sizeof(operand_text), "$%04X", operand);
+            SetDisassemblerOperand(record, operand, false, operand_text);
+            break;
+        }
+        case GG_OPCode_Type_2b_2b_2b:
+        {
+            snprintf(record->name, 64, format, op1 | (op2 << 8), record->opcodes[3] | (record->opcodes[4] << 8), record->opcodes[5] | (record->opcodes[6] << 8));
+            break;
+        }
+        case GG_OPCode_Type_1b_Relative:
+        {
+            s8 rel = (s8)op1;
+            u16 jump_address = address + 2 + rel;
+            record->jump = true;
+            record->jump_address = jump_address;
+            record->jump_bank = m_memory->GetBank(jump_address);
+            if (m_disassembler_syntax == GG_Disassembler_Syntax_WLADX)
+            {
+                snprintf(record->name, 64, format, op1);
+                char operand_text[8];
+                snprintf(operand_text, sizeof(operand_text), "$%02X", op1);
+                SetDisassemblerOperandText(record, operand_text);
+            }
+            else
+            {
+                snprintf(record->name, 64, format, jump_address, rel);
+                char operand_text[8];
+                snprintf(operand_text, sizeof(operand_text), "$%04X", jump_address);
+                SetDisassemblerOperandText(record, operand_text);
+            }
+            break;
+        }
+        case GG_OPCode_Type_1b_1b_Relative:
+        {
+            s8 rel = (s8)op2;
+            u16 jump_address = address + 3 + rel;
+            record->jump = true;
+            record->jump_address = jump_address;
+            record->jump_bank = m_memory->GetBank(jump_address);
+            if (m_disassembler_syntax == GG_Disassembler_Syntax_WLADX)
+            {
+                snprintf(record->name, 64, format, op1, op2);
+                char operand_text[8];
+                snprintf(operand_text, sizeof(operand_text), "$%02X", op2);
+                SetDisassemblerOperandText(record, operand_text);
+            }
+            else
+            {
+                snprintf(record->name, 64, format, op1, jump_address, rel);
+                char operand_text[8];
+                snprintf(operand_text, sizeof(operand_text), "$%04X", jump_address);
+                SetDisassemblerOperandText(record, operand_text);
+            }
+            break;
+        }
+        case GG_OPCode_Type_ST0:
+        {
+            u8 reg = op1 & 0x1F;
+            snprintf(record->name, 64, format, reg, k_register_names[reg]);
+            break;
+        }
+        case GG_OPCode_Type_BRK:
+        {
+            if (m_disassembler_syntax == GG_Disassembler_Syntax_Geargrafx)
+            {
+                if (op1 == 0x00)
+                    snprintf(record->name, 64, "{n}BRK");
+                else
+                    snprintf(record->name, 64, "{n}BRK {o}#$%02X", op1);
+            }
+            else if (m_disassembler_syntax == GG_Disassembler_Syntax_PCEAS)
+            {
+                if (op1 == 0x00)
+                    snprintf(record->name, 64, "%s", format);
+                else
+                    snprintf(record->name, 64, "{n}.db {o}$00,$%02X", op1);
+            }
+            else
+            {
+                snprintf(record->name, 64, format, op1);
+            }
+            break;
+        }
+        case GG_OPCode_Type_MPR:
+        {
+            if (m_disassembler_syntax == GG_Disassembler_Syntax_PCEAS)
+            {
+                int mpr = -1;
+                for (int i = 0; i < 8; i++)
+                {
+                    if (op1 == (1 << i))
+                    {
+                        mpr = i;
+                        break;
+                    }
+                }
+
+                if (mpr >= 0)
+                    snprintf(record->name, 64, format, mpr);
+                else
+                    snprintf(record->name, 64, "{n}.db {o}$%02X,$%02X", opcode, op1);
+            }
+            else
+            {
+                snprintf(record->name, 64, format, op1);
+            }
+            break;
+        }
+        default:
+        {
+            break;
+        }
+    }
+
+    // JMP hhll, JSR hhll
+    if (opcode == 0x4C || opcode == 0x20)
+    {
+        u16 jump_address = Address16(record->opcodes[2], record->opcodes[1]);
+        record->jump = true;
+        record->jump_address = jump_address;
+        record->jump_bank = m_memory->GetBank(jump_address);
+    }
+
+    // BSR rr, JSR hhll
+    if (opcode == 0x44 || opcode == 0x20)
+    {
+        record->subroutine = true;
+    }
+
+    if (record->irq > 0 && record->irq < 6)
+    {
+        static const char* k_irq_auto_symbol_format[6] = {
+            "????_%02X_%04X", "RESET_%02X_%04X", "NMI_%02X_%04X",
+            "TIMER_IRQ_%02X_%04X", "IRQ1_%02X_%04X", "IRQ2_BRK_%02X_%04X"
+        };
+        snprintf(record->auto_symbol, 64, k_irq_auto_symbol_format[record->irq], record->bank, address);
+    }
+
+    if (record->jump)
+    {
+        GG_Disassembler_Record* target = m_memory->GetOrCreateDisassemblerRecord(record->jump_address);
+        if (IsValidPointer(target))
+        {
+            if (record->subroutine)
+            {
+                snprintf(target->auto_symbol, 64, "SUB_%02X_%04X", record->jump_bank, record->jump_address);
+            }
+            else if (strncmp(target->auto_symbol, "SUB_", 4) != 0)
+            {
+                snprintf(target->auto_symbol, 64, "TAG_%02X_%04X", record->jump_bank, record->jump_address);
+            }
+        }
+    }
+
+    SetDisassemblerRecordSegment(record);
+#else
+    UNUSED(record);
+    UNUSED(opcode);
+    UNUSED(address);
+#endif
+}
+
+INLINE void HuC6280::SetDisassemblerRecordSegment(GG_Disassembler_Record* record)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    Memory::MemoryBankType bank_type = m_memory->GetBankType(record->bank);
+
+    switch (bank_type)
+    {
+        case Memory::MEMORY_BANK_TYPE_ROM:
+            strncpy_fit(record->segment, "ROM  ", sizeof(record->segment));
+            break;
+        case Memory::MEMORY_BANK_TYPE_BIOS:
+            strncpy_fit(record->segment, "BIOS ", sizeof(record->segment));
+            break;
+        case Memory::MEMORY_BANK_TYPE_CARD_RAM:
+            strncpy_fit(record->segment, "CRAM ", sizeof(record->segment));
+            break;
+        case Memory::MEMORY_BANK_TYPE_BACKUP_RAM:
+            strncpy_fit(record->segment, "BRAM ", sizeof(record->segment));
+            break;
+        case Memory::MEMORY_BANK_TYPE_WRAM:
+            strncpy_fit(record->segment, "WRAM ", sizeof(record->segment));
+            break;
+        case Memory::MEMORY_BANK_TYPE_CDROM_RAM:
+            strncpy_fit(record->segment, "CDRAM", sizeof(record->segment));
+            break;
+        case Memory::MEMORY_BANK_TYPE_HARDWARE:
+            strncpy_fit(record->segment, "HW   ", sizeof(record->segment));
+            break;
+        default:
+            strncpy_fit(record->segment, "???? ", sizeof(record->segment));
+            break;
+    }
+#else
+    UNUSED(record);
+#endif
+}
+
+INLINE void HuC6280::DisassembleAhead(int count)
+{
+    DisassembleAhead(m_PC.GetValue(), count, 0);
+}
+
+inline void HuC6280::DisassembleAhead(u16 start_address, int count, int depth)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    if (depth > 3)
+        return;
+
+    u16 address = start_address;
+    int disassembled = 0;
+
+    while (disassembled < count && address < 0xFFFF)
+    {
+        GG_Disassembler_Record* record = m_memory->GetOrCreateDisassemblerRecord(address);
+
+        if (!IsValidPointer(record))
+            break;
+
+        u8 opcode = 0;
+        if (!m_memory->TryPeek(address, &opcode))
+        {
+            InvalidateOverlappingRecords(address, record->size > 0 ? record->size : 1);
+            int saved_irq = m_debug_next_irq;
+            m_debug_next_irq = 0;
+            PopulateUnavailableDisassemblerRecord(record, address);
+            m_debug_next_irq = saved_irq;
+            break;
+        }
+
+        u8 opcode_size = k_huc6280_opcode_sizes[opcode];
+
+        if ((u32)address + opcode_size > 0xFFFF)
+            break;
+
+        bool changed = (record->opcodes[0] != opcode);
+        record->opcodes[0] = opcode;
+
+        for (int i = 1; i < opcode_size; i++)
+        {
+            u8 mem_byte = 0;
+            if (!m_memory->TryPeek(address + i, &mem_byte))
+            {
+                InvalidateOverlappingRecords(address, record->size > 0 ? record->size : 1);
+                int saved_irq = m_debug_next_irq;
+                m_debug_next_irq = 0;
+                PopulateUnavailableDisassemblerRecord(record, address);
+                m_debug_next_irq = saved_irq;
+                return;
+            }
+
+            if (record->opcodes[i] != mem_byte)
+            {
+                changed = true;
+                record->opcodes[i] = mem_byte;
+            }
+        }
+
+        if (changed || record->size == 0)
+        {
+            InvalidateOverlappingRecords(address, opcode_size);
+
+            int saved_irq = m_debug_next_irq;
+            m_debug_next_irq = 0;
+            PopulateDisassemblerRecord(record, opcode, address);
+            m_debug_next_irq = saved_irq;
+        }
+
+        if (record->jump)
+        {
+            u8 jump_bank = m_memory->GetBank(record->jump_address);
+            if (jump_bank != 0xFF)
+                DisassembleAhead(record->jump_address, count / 2, depth + 1);
+        }
+
+        address += opcode_size;
+        disassembled++;
+
+        // Stop at unconditional control flow (end of block)
+        // 0x40=RTI, 0x4C=JMP abs, 0x60=RTS, 0x6C=JMP (ind), 0x7C=JMP (abs,X), 0x80=BRA
+        if (opcode == 0x40 || opcode == 0x4C || opcode == 0x60 || opcode == 0x6C || opcode == 0x7C || opcode == 0x80)
+            break;
+    }
+#else
+    UNUSED(start_address);
+    UNUSED(count);
+    UNUSED(depth);
+#endif
+}
+
+#endif /* HUC6280_INLINE_H */

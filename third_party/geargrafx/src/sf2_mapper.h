@@ -1,0 +1,57 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#ifndef SF2_MAPPER_H
+#define SF2_MAPPER_H
+
+#include "types.h"
+#include "mapper.h"
+
+class Media;
+class Memory;
+class TraceLogger;
+
+class SF2Mapper : public Mapper
+{
+public:
+    SF2Mapper(Media* media, Memory* memory);
+    virtual ~SF2Mapper();
+    virtual u8 Read(u8 bank, u16 address);
+    u8 Peek(u8 bank, u16 address);
+    bool GetROMPhysicalAddress(u8 bank, u16 address, u32& rom_address);
+    virtual void Write(u8 bank, u16 address, u8 value);
+    virtual void Reset();
+    virtual void SaveState(std::ostream& stream);
+    virtual void LoadState(std::istream& stream);
+    void SetTraceLogger(TraceLogger* trace_logger);
+
+private:
+    void TraceSF2MapperEvent(u16 address);
+    void LogSF2MapperEvent(u16 address);
+    int ComputeBankAddress(int bank);
+
+private:
+    int m_bank;
+    int m_bank_address;
+    TraceLogger* m_trace_logger;
+};
+
+#include "sf2_mapper_inline.h"
+
+#endif /* SF2_MAPPER_H */

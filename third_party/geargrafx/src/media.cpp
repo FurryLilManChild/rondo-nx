@@ -1,0 +1,1311 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#include <string>
+#include <fstream>
+#include <algorithm>
+#include <assert.h>
+#include "media.h"
+#include "game_db.h"
+#include "crc.h"
+#include "ips_patch.h"
+#include "media_file.h"
+#include "cdrom_media.h"
+#include "mmi_archive.h"
+
+Media::Media(CdRomMedia* cdrom_media)
+{
+    m_cdrom_media = cdrom_media;
+    InitPointer(m_rom);
+    m_rom_size = 0;
+    m_card_ram_size = 0;
+    m_ready = false;
+    m_file_path[0] = 0;
+    m_file_directory[0] = 0;
+    m_file_name[0] = 0;
+    m_file_extension[0] = 0;
+    m_temp_path[0] = 0;
+    m_bios_name_syscard[0] = 0;
+    m_bios_name_gameexpress[0] = 0;
+    m_bios_name_pac_japan[0] = 0;
+    m_bios_name_pac_us[0] = 0;
+    m_crc = 0;
+    m_bios_crc_syscard = 0;
+    m_bios_crc_gameexpress = 0;
+    m_bios_crc_pac_japan = 0;
+    m_bios_crc_pac_us = 0;
+    m_is_hes = false;
+    m_is_gameexpress = false;
+    m_is_sgx = false;
+    m_is_cdrom = false;
+    m_cdrom_hardware_enabled = false;
+    m_is_mmi = false;
+    m_is_in_game_database = false;
+    m_game_database_name = NULL;
+    m_adpcm_clock_speed = GG_ADPCM_DEFAULT_CLOCK_SPEED;
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+    m_is_physical_cdrom = false;
+    m_physical_cdrom_device_id[0] = 0;
+#endif
+    m_is_mb128 = false;
+    m_is_valid_bios_syscard = false;
+    m_is_valid_bios_gameexpress = false;
+    m_is_loaded_bios_syscard = false;
+    m_is_loaded_bios_gameexpress = false;
+    m_is_valid_bios_pac_japan = false;
+    m_is_valid_bios_pac_us = false;
+    m_is_loaded_bios_pac_japan = false;
+    m_is_loaded_bios_pac_us = false;
+    m_mapper = STANDARD_MAPPER;
+    m_avenue_pad_3_button = GG_KEY_RUN;
+    m_console_type = GG_CONSOLE_AUTO;
+    m_cdrom_type = GG_CDROM_AUTO;
+    m_laseractive_region = GG_LASERACTIVE_REGION_AUTO;
+    m_selected_laseractive_region = GG_LASERACTIVE_REGION_AUTO;
+    m_force_backup_ram = false;
+    m_force_gameexpress = false;
+    m_preload_cdrom = false;
+    m_softpatch_applied = false;
+    m_softpatch_path[0] = 0;
+    m_rom_cheat_count = 0;
+    m_rom_cheat_undo_count = 0;
+
+    m_rom_map = new u8*[128];
+    m_rom_bank_offset = new u32[128];
+    for (int i = 0; i < 128; i++)
+    {
+        InitPointer(m_rom_map[i]);
+        m_rom_bank_offset[i] = 0;
+    }
+}
+
+Media::~Media()
+{
+    SafeDeleteArray(m_rom);
+    SafeDeleteArray(m_rom_map);
+    SafeDeleteArray(m_rom_bank_offset);
+}
+
+void Media::Init()
+{
+    Reset();
+}
+
+void Media::Reset()
+{
+    SafeDeleteArray(m_rom);
+    m_rom_size = 0;
+    m_card_ram_size = 0;
+    m_ready = false;
+    m_file_path[0] = 0;
+    m_file_directory[0] = 0;
+    m_file_name[0] = 0;
+    m_file_extension[0] = 0;
+    m_crc = 0;
+    m_is_hes = false;
+    m_is_gameexpress = false;
+    m_is_sgx = false;
+    m_is_cdrom = false;
+    m_cdrom_hardware_enabled = false;
+    m_is_mmi = false;
+    m_is_in_game_database = false;
+    m_game_database_name = NULL;
+    m_adpcm_clock_speed = GG_ADPCM_DEFAULT_CLOCK_SPEED;
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+    m_is_physical_cdrom = false;
+    m_physical_cdrom_device_id[0] = 0;
+#endif
+    m_is_mb128 = false;
+    m_mapper = STANDARD_MAPPER;
+    m_avenue_pad_3_button = GG_KEY_RUN;
+    m_softpatch_applied = false;
+    m_softpatch_path[0] = 0;
+    m_rom_cheat_count = 0;
+    m_rom_cheat_undo_count = 0;
+
+    for (int i = 0; i < 128; i++)
+    {
+        InitPointer(m_rom_map[i]);
+        m_rom_bank_offset[i] = 0;
+    }
+
+    m_cdrom_media->Reset();
+}
+
+bool Media::CanAddRomCheats(int count)
+{
+    return (m_rom_cheat_count + count) <= GG_MAX_CHEATS;
+}
+
+void Media::AddRomCheat(const GG_Cheat& cheat)
+{
+    if (m_rom_cheat_count >= GG_MAX_CHEATS)
+        return;
+
+    m_rom_cheats[m_rom_cheat_count] = cheat;
+    m_rom_cheat_count++;
+}
+
+void Media::ClearRomCheats()
+{
+    RestoreRomCheats();
+    m_rom_cheat_count = 0;
+}
+
+void Media::ApplyRomCheats()
+{
+    RestoreRomCheats();
+
+    if (!IsValidPointer(m_rom) || m_is_cdrom)
+        return;
+
+    for (int i = 0; i < m_rom_cheat_count; i++)
+    {
+        GG_Cheat* cheat = &m_rom_cheats[i];
+        u32 bank = cheat->address >> 13;
+
+        if (bank >= 128)
+            continue;
+
+        u32 offset = m_rom_bank_offset[bank] + (cheat->address & 0x1FFF);
+
+        if (offset >= (u32)m_rom_size)
+            continue;
+
+        if ((cheat->compare >= 0) && (m_rom[offset] != cheat->compare))
+            continue;
+
+        if (m_rom_cheat_undo_count >= GG_MAX_CHEATS)
+            break;
+
+        m_rom_cheat_undo[m_rom_cheat_undo_count].offset = offset;
+        m_rom_cheat_undo[m_rom_cheat_undo_count].value = m_rom[offset];
+        m_rom_cheat_undo_count++;
+
+        m_rom[offset] = cheat->value;
+    }
+}
+
+void Media::RestoreRomCheats()
+{
+    if (IsValidPointer(m_rom))
+    {
+        for (int i = m_rom_cheat_undo_count - 1; i >= 0; i--)
+            m_rom[m_rom_cheat_undo[i].offset] = m_rom_cheat_undo[i].value;
+    }
+
+    m_rom_cheat_undo_count = 0;
+}
+
+void Media::SetTempPath(const char* path)
+{
+    if (IsValidPointer(path))
+    {
+        strncpy_fit(m_temp_path, path, sizeof(m_temp_path));
+    }
+    else
+    {
+        Error("Invalid temp path %s", path);
+    }
+}
+
+bool Media::IsSoftpatchApplied() const
+{
+    return m_softpatch_applied;
+}
+
+const char* Media::GetSoftpatchPath() const
+{
+    return m_softpatch_path;
+}
+
+bool Media::LoadMedia(const char* path, bool softpatching)
+{
+    using namespace std;
+
+    Log("Loading %s...", path);
+
+    if (!IsValidFile(path))
+        return false;
+
+    Reset();
+    GatherDataFromPath(path);
+
+    const char* dot = strrchr(m_file_name, '.');
+
+    if (!IsValidPointer(dot) || (dot[1] == 0))
+    {
+        Error("Media file has no extension: %s", path);
+        Reset();
+        return false;
+    }
+
+    if (strcmp(m_file_extension, "zip") == 0)
+    {
+        m_ready = LoadMediaFromZipFile(path, softpatching);
+    }
+    else if (strcmp(m_file_extension, "cue") == 0)
+    {
+        m_is_cdrom = true;
+        m_ready = LoadCueFromFile(path);
+    }
+    else if (strcmp(m_file_extension, "chd") == 0)
+    {
+        m_is_cdrom = true;
+        m_ready = LoadChdFromFile(path);
+    }
+    else if (strcmp(m_file_extension, "mmi") == 0)
+    {
+        m_is_cdrom = true;
+        m_is_mmi = true;
+        m_ready = LoadMmiFromFile(path);
+    }
+    else if (strcmp(m_file_extension, "iso") == 0)
+    {
+        Log("ISO files are not supported. Please use CUE files.");
+        m_ready = false;
+    }
+    else
+    {
+        ifstream file;
+        open_ifstream_utf8(file, path, ios::in | ios::binary | ios::ate);
+
+        if (file.is_open())
+        {
+            int size = (int)(file.tellg());
+            if (size > 0)
+            {
+                char* buffer = new char[size];
+                file.seekg(0, ios::beg);
+
+                if (file.read(buffer, size))
+                {
+                    bool is_empty = false;
+
+                    for (int i = 0; i < size; i++)
+                    {
+                        if (buffer[i] != 0)
+                            break;
+
+                        if (i == size - 1)
+                        {
+                            Error("File %s is empty!", path);
+                            is_empty = true;
+                            m_ready = false;
+                        }
+                    }
+
+                    if (!is_empty)
+                    {
+                        m_is_cdrom = false;
+                        m_ready = LoadHuCardFromBufferWithSoftpatch((u8*)(buffer), size, path, softpatching);
+                    }
+                }
+                else
+                {
+                    Error("There was a problem reading the file %s...", path);
+                    m_ready = false;
+                }
+
+                SafeDeleteArray(buffer);
+            }
+            else
+            {
+                Error("Invalid file size %d for file %s...", size, path);
+                m_ready = false;
+            }
+
+            file.close();
+        }
+        else
+        {
+            Error("There was a problem loading the file %s...", path);
+            m_ready = false;
+        }
+    }
+
+    if (!m_ready && m_softpatch_applied)
+    {
+        Error("Media rejected after applying IPS patch %s. Loading unpatched media.", m_softpatch_path);
+        return LoadMedia(path, false);
+    }
+    else if (!m_ready)
+        Reset();
+
+    return m_ready;
+}
+
+bool Media::LoadHuCardFromBufferWithSoftpatch(const u8* buffer, int size, const char* path,
+    bool softpatching)
+{
+    u8* patched_buffer = NULL;
+    int patched_size = 0;
+    char patch_path[4096] = {};
+    bool patched = softpatching && ips_apply_patch(m_file_path, buffer, size,
+        &patched_buffer, &patched_size, patch_path, sizeof(patch_path));
+
+    bool loaded;
+    if (patched)
+        loaded = LoadHuCardFromBuffer(patched_buffer, patched_size, path);
+    else
+        loaded = LoadHuCardFromBuffer(buffer, size, path);
+
+    m_softpatch_applied = patched;
+    if (m_softpatch_applied)
+        strncpy_fit(m_softpatch_path, patch_path, sizeof(m_softpatch_path));
+    else
+        m_softpatch_path[0] = 0;
+
+    SafeDeleteArray(patched_buffer);
+    return loaded;
+}
+
+bool Media::LoadHuCardFromBuffer(const u8* buffer, int size, const char* path)
+{
+    Log("Loading HuCard from buffer... Size: %d", size);
+    Reset();
+
+    if (!IsValidPointer(buffer) || size <= 0)
+    {
+        Error("Unable to load HuCard from buffer: Buffer invalid %p. Size: %d", buffer, size);
+        return false;
+    }
+
+    if (IsValidPointer(path))
+        GatherDataFromPath(path);
+
+    if(size & 512)
+    {
+        Debug("Removing 512 bytes header from HuCard...");
+        size &= ~512;
+        buffer += 512;
+    }
+
+    if (size <= 0)
+    {
+        Error("Invalid size found: %d (0x%X) bytes", size, size);
+        return false;
+    }
+
+    m_rom_size = (size + 0x1FFF) & ~0x1FFF;
+
+    if (m_rom_size != size)
+        Log("WARNING: HuCard size %d (0x%X) is not 8KB aligned. Padding to %d (0x%X) bytes", size, size, m_rom_size, m_rom_size);
+
+    m_rom = new u8[m_rom_size];
+    memset(m_rom, 0xFF, m_rom_size);
+    memcpy(m_rom, buffer, size);
+    m_ready = true;
+
+    Debug("HuCard loaded from buffer. Size: %d bytes", m_rom_size);
+
+    return m_ready;
+}
+
+bool Media::LoadCueFromFile(const char* path)
+{
+    m_ready = m_cdrom_media->LoadCueFromFile(path, m_preload_cdrom);
+    return m_ready;
+}
+
+bool Media::LoadChdFromFile(const char* path)
+{
+    m_ready = m_cdrom_media->LoadChdFromFile(path, m_preload_cdrom);
+    return m_ready;
+}
+
+bool Media::LoadMmiFromFile(const char* path)
+{
+    m_ready = m_cdrom_media->LoadMmiFromFile(path);
+    if (m_ready)
+        SelectPacBios();
+    return m_ready;
+}
+
+bool Media::IsLaserActive()
+{
+    return m_is_mmi && m_cdrom_media->IsLaserDisc();
+}
+
+u8* Media::GetMappedBios()
+{
+    return m_is_cdrom ? m_rom_map[0] : NULL;
+}
+
+int Media::GetMappedBiosSize()
+{
+    if (!m_is_cdrom)
+        return 0;
+    const GG_MmiInfo* info = IsLaserActive() ? m_cdrom_media->GetMmiInfo() : NULL;
+    if (info && info->card.empty())
+        return GG_BIOS_LASERACTIVE_SIZE;
+    return m_is_gameexpress ? GG_BIOS_GAME_EXPRESS_SIZE : GG_BIOS_SYSCARD_SIZE;
+}
+
+bool Media::IsBiosReady()
+{
+    const GG_MmiInfo* info = IsLaserActive() ? m_cdrom_media->GetMmiInfo() : NULL;
+
+    if (info && info->card.empty())
+        return IsPacBiosLoaded(m_selected_laseractive_region);
+
+    return m_is_gameexpress ? m_is_loaded_bios_gameexpress : m_is_loaded_bios_syscard;
+}
+
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+bool Media::LoadPhysicalCdRom(const char* device_id)
+{
+    if (!IsValidPointer(device_id) || (device_id[0] == 0))
+    {
+        Error("Invalid physical CD-ROM device id");
+        return false;
+    }
+
+    Log("Loading physical CD-ROM %s...", device_id);
+
+    Reset();
+
+    m_is_cdrom = true;
+    m_is_physical_cdrom = true;
+    strncpy_fit(m_physical_cdrom_device_id, device_id, sizeof(m_physical_cdrom_device_id));
+
+    m_ready = m_cdrom_media->LoadPhysicalDrive(device_id, m_preload_cdrom);
+    if (!m_ready)
+    {
+        Reset();
+        return false;
+    }
+
+    m_crc = m_cdrom_media->GetCRC();
+
+    if (m_crc != 0)
+    {
+        snprintf(m_file_name, sizeof(m_file_name), "physical_cdrom_%08X.physicalcd", m_crc);
+    }
+    else
+    {
+        char sanitized[128] = {};
+        int pos = 0;
+        for (int i = 0; (device_id[i] != 0) && (pos < ((int)sizeof(sanitized) - 1)); i++)
+        {
+            char c = device_id[i];
+            bool valid = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || ((c >= '0') && (c <= '9'));
+            sanitized[pos++] = valid ? c : '_';
+        }
+
+        if (pos == 0)
+            strncpy_fit(sanitized, "unknown", sizeof(sanitized));
+
+        snprintf(m_file_name, sizeof(m_file_name), "physical_cdrom_%s.physicalcd", sanitized);
+    }
+
+    strncpy_fit(m_file_path, m_file_name, sizeof(m_file_path));
+    m_file_directory[0] = 0;
+    strncpy_fit(m_file_extension, "physicalcd", sizeof(m_file_extension));
+
+    return true;
+}
+#endif
+
+bool Media::LoadBios(const char* file_path, bool syscard)
+{
+    using namespace std;
+
+    UnloadBios(syscard);
+
+    ifstream file;
+    open_ifstream_utf8(file, file_path, ios::in | ios::binary | ios::ate);
+
+    if (!file.is_open())
+    {
+        Log("There was a problem opening the file %s", file_path);
+        return false;
+    }
+
+    streamsize size = file.tellg();
+    int expected_size = syscard ? GG_BIOS_SYSCARD_SIZE : GG_BIOS_GAME_EXPRESS_SIZE;
+
+    if ((size != expected_size) && (size != expected_size + 512))
+    {
+        Log("Incorrect BIOS size %lld: expected %d. %s", (long long)size, expected_size, file_path);
+        return false;
+    }
+
+    u8* buffer = new u8[size];
+    file.seekg(0, ios::beg);
+
+    if (!file.read(reinterpret_cast<char*>(buffer), size))
+    {
+        SafeDeleteArray(buffer);
+        Log("There was a problem reading the BIOS file %s", file_path);
+        return false;
+    }
+    file.close();
+
+    bool loaded = LoadBiosData(buffer, (int)size, syscard, file_path);
+    SafeDeleteArray(buffer);
+    return loaded;
+}
+
+bool Media::LoadBiosFromBuffer(const u8* buffer, int size, bool syscard)
+{
+    return LoadBiosData(buffer, size, syscard, NULL);
+}
+
+bool Media::LoadPacBios(const char* file_path, GG_LaserActive_Region region)
+{
+    if (!IsValidPointer(file_path) || ((region != GG_LASERACTIVE_REGION_JAPAN) && (region != GG_LASERACTIVE_REGION_US)))
+        return false;
+
+    MediaFile* file = MediaFile::OpenFile(file_path);
+
+    if (!file)
+    {
+        Log("There was a problem opening the LaserActive BIOS %s", file_path);
+        return false;
+    }
+
+    s64 size = file->GetSize();
+
+    if ((size != GG_BIOS_LASERACTIVE_SIZE) && (size != GG_BIOS_LASERACTIVE_SIZE + 512))
+    {
+        Log("Invalid LaserActive BIOS size %lld: %s", (long long)size, file_path);
+        SafeDelete(file);
+        return false;
+    }
+
+    u8* buffer = new u8[(size_t)size];
+    bool read = file->ReadAt(0, buffer, (u64)size);
+    SafeDelete(file);
+
+    if (!read)
+    {
+        SafeDeleteArray(buffer);
+        Log("There was a problem reading the LaserActive BIOS %s", file_path);
+        return false;
+    }
+
+    bool loaded = LoadPacBiosData(buffer, (int)size, region, file_path);
+    SafeDeleteArray(buffer);
+    return loaded;
+}
+
+bool Media::LoadPacBiosFromBuffer(const u8* buffer, int size, GG_LaserActive_Region region)
+{
+    return LoadPacBiosData(buffer, size, region, NULL);
+}
+
+void Media::UnloadBios(bool syscard)
+{
+    if (syscard)
+    {
+        m_is_loaded_bios_syscard = false;
+        m_is_valid_bios_syscard = false;
+    }
+    else
+    {
+        m_is_loaded_bios_gameexpress = false;
+        m_is_valid_bios_gameexpress = false;
+    }
+}
+
+void Media::UnloadPacBios(GG_LaserActive_Region region)
+{
+    if (region == GG_LASERACTIVE_REGION_JAPAN)
+    {
+        m_is_loaded_bios_pac_japan = false;
+        m_is_valid_bios_pac_japan = false;
+        m_bios_crc_pac_japan = 0;
+        m_bios_name_pac_japan[0] = 0;
+    }
+    else if (region == GG_LASERACTIVE_REGION_US)
+    {
+        m_is_loaded_bios_pac_us = false;
+        m_is_valid_bios_pac_us = false;
+        m_bios_crc_pac_us = 0;
+        m_bios_name_pac_us[0] = 0;
+    }
+
+    SelectPacBios();
+}
+
+bool Media::LoadPacBiosData(const u8* buffer, int size, GG_LaserActive_Region region, const char* path)
+{
+    if (!IsValidPointer(buffer) || ((region != GG_LASERACTIVE_REGION_JAPAN) && (region != GG_LASERACTIVE_REGION_US)))
+        return false;
+
+    const u8* source = buffer;
+    int data_size = size;
+
+    if (data_size == (GG_BIOS_LASERACTIVE_SIZE + 512))
+    {
+        source += 512;
+        data_size -= 512;
+    }
+
+    if (data_size != GG_BIOS_LASERACTIVE_SIZE)
+    {
+        Log("Incorrect LaserActive BIOS size %d: expected %d%s%s", data_size, GG_BIOS_LASERACTIVE_SIZE, path ? ". " : "", path ? path : "");
+        return false;
+    }
+
+    u32 crc = CalculateCRC32(0, source, data_size);
+    bool valid = false;
+    const char* name = "Unknown";
+
+    if ((region == GG_LASERACTIVE_REGION_JAPAN) && (crc == 0xA8CB694C))
+    {
+        valid = true;
+        name = "PAC-N1 v1.02";
+    }
+    else if ((region == GG_LASERACTIVE_REGION_JAPAN) && (crc == 0x76116A02))
+    {
+        valid = true;
+        name = "PCE-LP1 v1.02";
+    }
+    else if ((region == GG_LASERACTIVE_REGION_US) && (crc == 0x01223DD5))
+    {
+        valid = true;
+        name = "PAC-N10 v1.02";
+    }
+
+    if (!valid)
+    {
+        Log("Unrecognized %s LaserActive BIOS CRC32 %08X%s%s",
+            region == GG_LASERACTIVE_REGION_US ? "US" : "Japanese", crc,
+            path ? ": " : "", path ? path : "");
+    }
+
+    u8* destination = (region == GG_LASERACTIVE_REGION_US) ? m_pac_bios_us : m_pac_bios_japan;
+    bool* loaded = (region == GG_LASERACTIVE_REGION_US) ? &m_is_loaded_bios_pac_us : &m_is_loaded_bios_pac_japan;
+    bool* valid_bios = (region == GG_LASERACTIVE_REGION_US) ? &m_is_valid_bios_pac_us : &m_is_valid_bios_pac_japan;
+    u32* bios_crc = (region == GG_LASERACTIVE_REGION_US) ? &m_bios_crc_pac_us : &m_bios_crc_pac_japan;
+    char* bios_name = (region == GG_LASERACTIVE_REGION_US) ? m_bios_name_pac_us : m_bios_name_pac_japan;
+
+    memcpy(destination, source, GG_BIOS_LASERACTIVE_SIZE);
+    *loaded = true;
+    *valid_bios = valid;
+    *bios_crc = crc;
+    strncpy_fit(bios_name, name, 64);
+    SelectPacBios();
+
+    Log("LaserActive BIOS loaded: %s (%08X)%s%s", name, crc, path ? ": " : "", path ? path : "");
+    return true;
+}
+
+void Media::SelectPacBios()
+{
+    if (m_laseractive_region == GG_LASERACTIVE_REGION_JAPAN)
+    {
+        m_selected_laseractive_region = GG_LASERACTIVE_REGION_JAPAN;
+        return;
+    }
+
+    if (m_laseractive_region == GG_LASERACTIVE_REGION_US)
+    {
+        m_selected_laseractive_region = GG_LASERACTIVE_REGION_US;
+        return;
+    }
+
+    const GG_MmiInfo* info = m_cdrom_media->GetMmiInfo();
+
+    if (info && info->region_code == "U")
+        m_selected_laseractive_region = GG_LASERACTIVE_REGION_US;
+    else if (info && info->region_code == "J")
+        m_selected_laseractive_region = GG_LASERACTIVE_REGION_JAPAN;
+    else if (m_is_loaded_bios_pac_japan && !m_is_loaded_bios_pac_us)
+        m_selected_laseractive_region = GG_LASERACTIVE_REGION_JAPAN;
+    else if (m_is_loaded_bios_pac_us && !m_is_loaded_bios_pac_japan)
+        m_selected_laseractive_region = GG_LASERACTIVE_REGION_US;
+    else
+        m_selected_laseractive_region = GG_LASERACTIVE_REGION_AUTO;
+}
+
+bool Media::LoadBiosData(const u8* buffer, int size, bool syscard, const char* path)
+{
+    int expected_size = syscard ? GG_BIOS_SYSCARD_SIZE : GG_BIOS_GAME_EXPRESS_SIZE;
+    u8* bios = syscard ? m_syscard_bios : m_gameexpress_bios;
+    u32* bios_crc = syscard ? &m_bios_crc_syscard : &m_bios_crc_gameexpress;
+    bool* loaded_bios = syscard ? &m_is_loaded_bios_syscard : &m_is_loaded_bios_gameexpress;
+    UnloadBios(syscard);
+
+    if (!IsValidPointer(buffer) || (size <= 0))
+        return false;
+
+    const u8* source = buffer;
+    int data_size = size;
+
+    if (data_size == expected_size + 512)
+    {
+        Log("Removing 512 bytes header from BIOS...");
+        data_size -= 512;
+        source += 512;
+    }
+
+    if (data_size != expected_size)
+    {
+        if (path)
+            Log("Incorrect BIOS size %d: expected: %d. %s", data_size, expected_size, path);
+        else
+            Log("Incorrect BIOS size %d: expected: %d", data_size, expected_size);
+
+        return false;
+    }
+
+    memcpy(bios, source, expected_size);
+
+    *bios_crc = CalculateCRC32(0, bios, expected_size);
+    GatherBIOSInfoFromDB(syscard);
+    *loaded_bios = true;
+
+    if (path)
+        Log("BIOS loaded (%d bytes): %s", data_size, path);
+    else
+        Log("BIOS loaded (%d bytes)", data_size);
+
+    return true;
+}
+
+bool Media::LoadMediaFromZipFile(const char* path, bool softpatching)
+{
+    Debug("Loading Media from ZIP file: %s", path);
+
+    using namespace std;
+
+    mz_zip_archive zip_archive;
+    mz_bool status;
+    memset(&zip_archive, 0, sizeof (zip_archive));
+
+    status = mz_zip_reader_init_file(&zip_archive, path, 0);
+
+    if (!status)
+    {
+        Error("mz_zip_reader_init_mem() failed!");
+        return false;
+    }
+
+    for (unsigned int i = 0; i < mz_zip_reader_get_num_files(&zip_archive); i++)
+    {
+        mz_zip_archive_file_stat file_stat;
+        if (!mz_zip_reader_file_stat(&zip_archive, i, &file_stat))
+        {
+            Error("mz_zip_reader_file_stat() failed!");
+            mz_zip_reader_end(&zip_archive);
+            return false;
+        }
+
+        Debug("ZIP Content - Filename: \"%s\", Comment: \"%s\", Uncompressed size: %u, Compressed size: %u", file_stat.m_filename, file_stat.m_comment, (unsigned int) file_stat.m_uncomp_size, (unsigned int) file_stat.m_comp_size);
+
+        string fn((const char*) file_stat.m_filename);
+        string extension = fn.substr(fn.find_last_of(".") + 1);
+        transform(extension.begin(), extension.end(), extension.begin(), (int(*)(int)) tolower);
+
+        if ((extension == "pce") || (extension == "sgx") || (extension == "hes") || (extension == "rom"))
+        {
+            void *p;
+            size_t uncomp_size;
+
+            p = mz_zip_reader_extract_file_to_heap(&zip_archive, file_stat.m_filename, &uncomp_size, 0);
+            if (!p)
+            {
+                Error("mz_zip_reader_extract_file_to_heap() failed!");
+                mz_zip_reader_end(&zip_archive);
+                return false;
+            }
+
+            bool ok = LoadHuCardFromBufferWithSoftpatch((const u8*) p, (int)uncomp_size, fn.c_str(), softpatching);
+
+            free(p);
+            mz_zip_reader_end(&zip_archive);
+
+            return ok;
+        }
+        else if (extension == "cue")
+        {
+            mz_zip_reader_end(&zip_archive);
+
+            m_is_cdrom = true;
+
+#if defined(__LIBRETRO__)
+            Error("CD-ROM images in ZIP files are not supported: %s", path);
+            return false;
+#else
+            if (m_temp_path[0] == 0)
+            {
+                Error("No temp path to extract ZIP file %s", path);
+                return false;
+            }
+
+            string temppath(m_temp_path);
+            string fullpath(path);
+            string filename;
+
+            size_t pos = fullpath.find_last_of("/\\");
+            if (pos != string::npos)
+                filename = fullpath.substr(pos + 1);
+            else
+                filename = fullpath;
+
+            temppath += "/" + filename + "_tmp";
+
+            Debug("Loading CD-ROM Media from ZIP file: %s", path);
+            Debug("Temporary path: %s", temppath.c_str());
+
+            if (!remove_directory_and_contents(temppath.c_str()))
+            {
+                Error("Unable to clear the extraction folder %s", temppath.c_str());
+                return false;
+            }
+
+            if (extract_zip_to_folder(path, temppath.c_str()))
+            {
+                string cue_path = temppath + "/" + fn;
+                return LoadCueFromFile(cue_path.c_str());
+            }
+            else
+            {
+                Error("Failed to extract ZIP file %s to %s", path, temppath.c_str());
+                return false;
+            }
+#endif
+        }
+    }
+
+    mz_zip_reader_end(&zip_archive);
+
+    Error("No valid ROM or CUE file found in ZIP archive %s", path);
+
+    return false;
+}
+
+void Media::GatherMediaInfo()
+{
+    m_cdrom_hardware_enabled = m_is_cdrom || (m_cdrom_type != GG_CDROM_AUTO);
+
+    if (m_is_cdrom)
+    {
+        m_crc = m_cdrom_media->GetCRC();
+        Log("CD-ROM CRC32: 0x%08X", m_crc);
+    }
+    else
+    {
+        m_crc = CalculateCRC32(0, m_rom, m_rom_size);
+        Log("HuCard Size: %d KB, %d bytes (0x%0X)", m_rom_size / 1024, m_rom_size, m_rom_size);
+        Log("HuCard CRC32: 0x%08X", m_crc);
+    }
+
+    GatherMediaInfoFromDB();
+
+    const GG_MmiInfo* mmi_info = m_cdrom_media->GetMmiInfo();
+    if (mmi_info)
+        m_is_gameexpress = mmi_info->card == "Games Express";
+
+    if (IsLaserActive())
+    {
+        m_mapper = STANDARD_MAPPER;
+        m_card_ram_size = 0x30000;
+        m_is_sgx = false;
+
+        SelectPacBios();
+        Log("Media is a LaserActive NEC LD-ROM2 image");
+    }
+
+    if (m_force_gameexpress && m_is_cdrom && !mmi_info)
+    {
+        m_is_gameexpress = true;
+        Log("Forcing Game Express because of user request");
+    }
+
+    if (m_console_type == GG_CONSOLE_SGX && !IsLaserActive())
+    {
+        m_is_sgx = true;
+        Log("Forcing SuperGrafx (SGX) because of user request");
+    }
+
+    if (strcmp(m_file_extension, "hes") == 0)
+    {
+        m_is_hes = true;
+        Log("Media is a HES music rom");
+    }
+
+    if (!m_is_sgx && (strcmp(m_file_extension, "sgx") == 0))
+    {
+        m_is_sgx = true;
+        Log("Forcing SuperGrafx (SGX) because of extension");
+    }
+
+    if ((m_mapper == STANDARD_MAPPER) && (m_rom_size > 0x100000))
+    {
+        m_mapper = SF2_MAPPER;
+        Log("ROM is bigger than 1MB. Forcing SF2 Mapper.");
+    }
+
+    switch (m_console_type)
+    {
+        case GG_CONSOLE_PCE:
+            Log("Console Type: PC Engine");
+            break;
+        case GG_CONSOLE_SGX:
+            Log("Console Type: SuperGrafx");
+            break;
+        case GG_CONSOLE_TG16:
+            Log("Console Type: TurboGrafx-16");
+            break;
+        default:
+            Log("Console Type: Auto");
+            break;
+    }
+
+    if (m_is_cdrom)
+    {
+        if (IsLaserActive())
+        {
+            Log("CD-ROM Type: LaserActive LD-ROM2");
+            m_mapper = STANDARD_MAPPER;
+            m_card_ram_size = 0x30000;
+        }
+        else
+        {
+            GG_CDROM_Type cdrom_type = m_cdrom_type;
+            if (mmi_info && cdrom_type == GG_CDROM_AUTO)
+            {
+                if (mmi_info->system == "CDROM2")
+                    cdrom_type = GG_CDROM_STANDARD;
+                else if (mmi_info->system == "SuperCDROM2")
+                    cdrom_type = GG_CDROM_SUPER_CDROM;
+                else if (mmi_info->system == "ArcadeCDROM2")
+                    cdrom_type = GG_CDROM_ARCADE_CARD;
+            }
+            switch (cdrom_type)
+            {
+                case GG_CDROM_STANDARD:
+                    Log("CD-ROM Type: Standard");
+                    if (m_mapper == ARCADE_CARD_MAPPER)
+                        m_mapper = STANDARD_MAPPER;
+                    break;
+                case GG_CDROM_SUPER_CDROM:
+                    Log("CD-ROM Type: Super CD-ROM");
+                    if (m_mapper == ARCADE_CARD_MAPPER)
+                        m_mapper = STANDARD_MAPPER;
+                    break;
+                case GG_CDROM_ARCADE_CARD:
+                    m_mapper = ARCADE_CARD_MAPPER;
+                    Log("CD-ROM Type: Arcade Card");
+                    break;
+                default:
+                    Log("CD-ROM Type: Auto");
+                    break;
+            }
+
+            if (cdrom_type != GG_CDROM_STANDARD)
+            {
+                m_card_ram_size = 0x30000;
+                Log("Enabling Super CD-ROM Card RAM");
+            }
+        }
+    }
+
+    InitRomMAP();
+}
+
+void Media::GatherMediaInfoFromDB()
+{
+    m_card_ram_size = 0;
+    m_is_gameexpress = false;
+    m_is_sgx = false;
+    m_is_in_game_database = false;
+    m_game_database_name = NULL;
+    m_adpcm_clock_speed = GG_ADPCM_DEFAULT_CLOCK_SPEED;
+
+    int i = 0;
+
+    while(!m_is_in_game_database && (k_game_database[i].title != 0))
+    {
+        u32 db_crc = k_game_database[i].crc;
+
+        if (db_crc == m_crc)
+        {
+            m_is_in_game_database = true;
+            m_game_database_name = k_game_database[i].title;
+            Log("Media found in database: %s. CRC: %08X", k_game_database[i].title, m_crc);
+
+            if (k_game_database[i].adpcm_clock_speed > 0.0f)
+            {
+                m_adpcm_clock_speed = k_game_database[i].adpcm_clock_speed;
+                Log("Media has a custom ADPCM clock speed: %.1f Hz", m_adpcm_clock_speed);
+            }
+
+            if (k_game_database[i].flags & GG_GAMEDB_CARD_RAM_8000)
+            {
+                m_card_ram_size = 0x8000;
+                Log("Media has 32KB of cartridge RAM");
+            }
+
+            if (k_game_database[i].flags & GG_GAMEDB_SGX_REQUIRED)
+            {
+                m_is_sgx = true;
+                Log("Media is a SuperGrafx (SGX) game.");
+            }
+
+            if (k_game_database[i].flags & GG_GAMEDB_SGX_OPTIONAL)
+            {
+                m_is_sgx = true;
+                Log("Media is a SuperGrafx (SGX) optional game.");
+            }
+
+            if (k_game_database[i].flags & GG_GAMEDB_SF2_MAPPER)
+            {
+                m_mapper = SF2_MAPPER;
+                Log("Media uses Street Fighter II mapper.");
+            }
+            else if (k_game_database[i].flags & GG_GAMEDB_ARCADE_CARD)
+            {
+                m_mapper = ARCADE_CARD_MAPPER;
+                Log("Media is an Arcade Card game.");
+            }
+            else
+            {
+                m_mapper = STANDARD_MAPPER;
+                Log("Media uses standard mapper.");
+            }
+
+            if (k_game_database[i].flags & GG_GAMEDB_GAME_EXPRESS)
+            {
+                m_is_gameexpress = true;
+                Log("Media is a Game Express game.");
+            }
+
+            if (k_game_database[i].flags & GG_GAMEDB_AVENUE_PAD_3_SELECT)
+            {
+                m_avenue_pad_3_button = GG_KEY_SELECT;
+                Log("Media uses Avenue Pad 3 select button.");
+            }
+            else if (k_game_database[i].flags & GG_GAMEDB_AVENUE_PAD_3_RUN)
+            {
+                m_avenue_pad_3_button = GG_KEY_RUN;
+                Log("Media uses Avenue Pad 3 run button.");
+            }
+
+            if (k_game_database[i].flags & GG_GAMEDB_MB128)
+            {
+                m_is_mb128 = true;
+                Log("Media supports MB128 backup memory.");
+            }
+        }
+        else
+            i++;
+    }
+
+    if (!m_is_in_game_database)
+    {
+        Debug("Media not found in database. CRC: %08X", m_crc);
+    }
+}
+
+void Media::GatherBIOSInfoFromDB(bool syscard)
+{
+    bool found = false;
+
+    u32* bios_crc = syscard ? &m_bios_crc_syscard : &m_bios_crc_gameexpress;
+    char* bios_name = syscard ? m_bios_name_syscard : m_bios_name_gameexpress;
+    bool* is_valid_bios = syscard ? &m_is_valid_bios_syscard : &m_is_valid_bios_gameexpress;
+
+    for (int i = 0; !found && (k_game_database[i].title != 0); i++)
+    {
+        const GG_DB_Entry& db_entry = k_game_database[i];
+        u32 db_crc = db_entry.crc;
+
+        if (db_crc == *bios_crc)
+        {
+            if (syscard && !(db_entry.flags & GG_GAMEDB_BIOS_SYSCARD))
+                continue;
+
+            if (!syscard && !(db_entry.flags & GG_GAMEDB_BIOS_GAME_EXPRESS))
+                continue;
+
+            found = true;
+            *is_valid_bios = true;
+            strncpy_fit(bios_name, db_entry.title, 64);
+
+            Log("BIOS found in database: %s. CRC: %08X", db_entry.title, db_crc);
+        }
+    }
+
+    if (!found)
+    {
+        Debug("BIOS not found in database. CRC: %08X", *bios_crc);
+        *is_valid_bios = false;
+        strncpy_fit(bios_name, "Unknown", 64);
+    }
+}
+
+void Media::GatherDataFromPath(const char* path)
+{
+    using namespace std;
+
+    string fullpath(path);
+    string directory;
+    string filename;
+    string extension;
+
+    size_t pos = fullpath.find_last_of("/\\");
+    if (pos != string::npos)
+    {
+        filename = fullpath.substr(pos + 1);
+        directory = fullpath.substr(0, pos);
+    }
+    else
+    {
+        filename = fullpath;
+        directory = "";
+    }
+
+    extension = fullpath.substr(fullpath.find_last_of(".") + 1);
+    transform(extension.begin(), extension.end(), extension.begin(), (int(*)(int)) tolower);
+
+    snprintf(m_file_path, sizeof(m_file_path), "%s", path);
+    snprintf(m_file_directory, sizeof(m_file_directory), "%s", directory.c_str());
+    snprintf(m_file_name, sizeof(m_file_name), "%s", filename.c_str());
+    snprintf(m_file_extension, sizeof(m_file_extension), "%s", extension.c_str());
+}
+
+void Media::InitRomMAP()
+{
+    const GG_MmiInfo* mmi_info = m_is_mmi ? m_cdrom_media->GetMmiInfo() : NULL;
+    bool external_card = mmi_info && !mmi_info->card.empty();
+    bool use_pac_bios = mmi_info && !external_card && m_cdrom_media->IsLaserDisc();
+    int rom_size = use_pac_bios ? GG_BIOS_LASERACTIVE_SIZE :
+        (m_is_cdrom ? (m_is_gameexpress ? GG_BIOS_GAME_EXPRESS_SIZE : GG_BIOS_SYSCARD_SIZE) : m_rom_size);
+    int rom_bank_count = (rom_size / 0x2000) + (rom_size % 0x2000 ? 1 : 0);
+    u8* bios_ptr = m_is_gameexpress ? m_gameexpress_bios : m_syscard_bios;
+    u8* pac_bios = (m_selected_laseractive_region == GG_LASERACTIVE_REGION_US) ?
+        m_pac_bios_us : m_pac_bios_japan;
+    u8* rom_ptr = use_pac_bios ? pac_bios : (m_is_cdrom ? bios_ptr : m_rom);
+
+    if (rom_bank_count == 0x30)
+    {
+        Debug("Mapping 384KB ROM");
+
+        for(int x = 0; x < 64; x++)
+        {
+            int bank = x & 0x1F;
+            int bank_address = bank * 0x2000;
+            m_rom_map[x] = &rom_ptr[bank_address];
+            m_rom_bank_offset[x] = bank_address;
+        }
+
+        for(int x = 64; x < 128; x++)
+        {
+            int bank = (x & 0x0F) + 0x20;
+            int bank_address = bank * 0x2000;
+            m_rom_map[x] = &rom_ptr[bank_address];
+            m_rom_bank_offset[x] = bank_address;
+        }
+    }
+    else if (rom_bank_count == 0x40)
+    {
+        Debug("Mapping 512KB ROM");
+
+        for(int x = 0; x < 64; x++)
+        {
+            int bank = x & 0x3F;
+            int bank_address = bank * 0x2000;
+            m_rom_map[x] = &rom_ptr[bank_address];
+            m_rom_bank_offset[x] = bank_address;
+        }
+
+        for(int x = 64; x < 128; x++)
+        {
+            int bank = (x & 0x1F) + 0x20;
+            int bank_address = bank * 0x2000;
+            m_rom_map[x] = &rom_ptr[bank_address];
+            m_rom_bank_offset[x] = bank_address;
+        }
+    }
+    else if (rom_bank_count == 0x60)
+    {
+        Debug("Mapping 768KB ROM");
+
+        for(int x = 0; x < 64; x++)
+        {
+            int bank = x & 0x3F;
+            int bank_address = bank * 0x2000;
+            m_rom_map[x] = &rom_ptr[bank_address];
+            m_rom_bank_offset[x] = bank_address;
+        }
+
+        for(int x = 64; x < 128; x++)
+        {
+            int bank = (x & 0x1F) + 0x40;
+            int bank_address = bank * 0x2000;
+            m_rom_map[x] = &rom_ptr[bank_address];
+            m_rom_bank_offset[x] = bank_address;
+        }
+    }
+    else
+    {
+        Debug("Default mapping ROM");
+
+        for(int x = 0; x < 128; x++)
+        {
+            int bank = x % rom_bank_count;
+            int bank_address = bank * 0x2000;
+            m_rom_map[x] = &rom_ptr[bank_address];
+            m_rom_bank_offset[x] = bank_address;
+        }
+    }
+}
+
+bool Media::IsValidFile(const char* path)
+{
+    if (!IsValidPointer(path))
+    {
+        Error("Invalid path %s", path);
+        return false;
+    }
+
+    MediaFile* file = MediaFile::OpenFile(path);
+
+    if (file)
+    {
+        s64 size = file->GetSize();
+
+        if (size <= 0)
+        {
+            Error("Unable to open file %s. Size: %lld", path, (long long)size);
+            SafeDelete(file);
+            return false;
+        }
+
+        if (!file->IsValid())
+        {
+            Error("Unable to open file %s. Bad file!", path);
+            SafeDelete(file);
+            return false;
+        }
+
+        SafeDelete(file);
+        return true;
+    }
+    else
+    {
+        Error("Unable to open file %s", path);
+        return false;
+    }
+}

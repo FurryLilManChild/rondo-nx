@@ -12,3 +12,9 @@
 work/
 build/
 __pycache__/
+# Local-only folders on the build PC
+tracer/
+out/
+saves/
+*.state
+*.rtr

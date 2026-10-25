@@ -1,0 +1,615 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#include <assert.h>
+#include <stdlib.h>
+#include "huc6260.h"
+#include "random.h"
+#include "trace_logger.h"
+#include "laseractive.h"
+
+HuC6260::HuC6260(HuC6202* huc6202, HuC6280* huc6280, Random* random, LaserActive* laseractive)
+{
+    m_huc6280 = huc6280;
+    m_huc6202 = huc6202;
+    m_random = random;
+    m_laseractive = laseractive;
+    InitPointer(m_trace_logger);
+    m_pixel_format = GG_PIXEL_RGBA8888;
+    m_state.CR = &m_control_register;
+    m_state.CTA = &m_color_table_address;
+    m_state.HPOS = &m_hpos;
+    m_state.VPOS = &m_vpos;
+    m_state.HSYNC = &m_hsync;
+    m_state.VSYNC = &m_vsync;
+    m_overscan = 0;
+    m_auto_crop = false;
+    m_scanline_start = 0;
+    m_scanline_end = 241;
+    m_laseractive_scanline_start = HUC6260_LASERACTIVE_SCANLINE_START;
+    m_laseractive_scanline_end = HUC6260_LASERACTIVE_SCANLINE_END;
+    m_laseractive_pixel_start = HUC6260_LASERACTIVE_PIXEL_START;
+    m_laseractive_width = HUC6260_LASERACTIVE_DEFAULT_WIDTH * HUC6260_LASERACTIVE_WIDTH_SCALE;
+    m_reset_value = -1;
+    m_palette = 0;
+    m_speed = HuC6260_SPEED_5_36_MHZ;
+    InitPointer(m_frame_buffer);
+    m_lowpass_enabled = false;
+    m_lowpass_intensity = 1.0f;
+    m_lowpass_cutoff_mhz = 5.0f;
+    m_lowpass_speed[0] = false;
+    m_lowpass_speed[1] = true;
+    m_lowpass_speed[2] = true;
+
+    CalculateScreenBounds();
+    ResetCrop();
+}
+
+HuC6260::~HuC6260()
+{
+}
+
+void HuC6260::Init(GG_Pixel_Format pixel_format)
+{
+    m_pixel_format = pixel_format;
+    InitPalettes();
+    Reset();
+}
+
+void HuC6260::SetTraceLogger(TraceLogger* trace_logger)
+{
+    m_trace_logger = trace_logger;
+}
+
+void HuC6260::LogVceEvent(u8 event)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    GG_Trace_Entry e = {};
+    e.type = TRACE_VCE;
+    e.vce.event = event;
+
+    switch (event)
+    {
+        case TRACE_VCE_CONTROL_WRITE:
+            e.vce.value = m_control_register;
+            break;
+        case TRACE_VCE_COLOR_WRITE:
+            e.vce.reg = m_color_table_address;
+            e.vce.value = m_color_table[m_color_table_address];
+            break;
+        case TRACE_VCE_VSYNC_START:
+        case TRACE_VCE_VSYNC_END:
+            e.vce.value = (u16)m_vpos;
+            break;
+        default:
+            break;
+    }
+
+    m_trace_logger->TraceLog(e);
+#else
+    UNUSED(event);
+#endif
+}
+
+void HuC6260::InitPalettes()
+{
+    for (int i = 0; i < 512; i++)
+    {
+        u8 green = ((i >> 6) & 0x07) * 255 / 7;
+        u8 red = ((i >> 3) & 0x07) * 255 / 7;
+        u8 blue = (i & 0x07) * 255 / 7;
+        m_rgba888_palette[HuC6260_PALETTE_STANDARD_RGB][i][0] = red;
+        m_rgba888_palette[HuC6260_PALETTE_STANDARD_RGB][i][1] = green;
+        m_rgba888_palette[HuC6260_PALETTE_STANDARD_RGB][i][2] = blue;
+        m_rgba888_palette[HuC6260_PALETTE_STANDARD_RGB][i][3] = 255;
+
+        // Custom palette defaults to standard RGB
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][0] = red;
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][1] = green;
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][2] = blue;
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][3] = 255;
+
+        green = ((i >> 6) & 0x07) * 63 / 7;
+        red = ((i >> 3) & 0x07) * 31 / 7;
+        blue = (i & 0x07) * 31 / 7;
+        u16 rgb565 = (red << 11) | (green << 5) | blue;
+        m_rgb565_palette[HuC6260_PALETTE_STANDARD_RGB][i] = rgb565;
+        m_rgb565_palette[HuC6260_PALETTE_CUSTOM][i] = rgb565;
+
+        const u8* turboxray = &k_rgb888_palette_turboxray[i * 3];
+        m_rgba888_palette[HuC6260_PALETTE_TURBOXRAY][i][0] = turboxray[0];
+        m_rgba888_palette[HuC6260_PALETTE_TURBOXRAY][i][1] = turboxray[1];
+        m_rgba888_palette[HuC6260_PALETTE_TURBOXRAY][i][2] = turboxray[2];
+        m_rgba888_palette[HuC6260_PALETTE_TURBOXRAY][i][3] = 255;
+
+        rgb565 = PackRGB565(turboxray[0], turboxray[1], turboxray[2]);
+        m_rgb565_palette[HuC6260_PALETTE_TURBOXRAY][i] = rgb565;
+
+        m_rgba888_palette[HuC6260_PALETTE_KITRINX][i][0] = k_rgb888_palette_composite[i][0];
+        m_rgba888_palette[HuC6260_PALETTE_KITRINX][i][1] = k_rgb888_palette_composite[i][1];
+        m_rgba888_palette[HuC6260_PALETTE_KITRINX][i][2] = k_rgb888_palette_composite[i][2];
+        m_rgba888_palette[HuC6260_PALETTE_KITRINX][i][3] = 255;
+
+        rgb565 = PackRGB565(k_rgb888_palette_composite[i][0],
+                            k_rgb888_palette_composite[i][1],
+                            k_rgb888_palette_composite[i][2]);
+        m_rgb565_palette[HuC6260_PALETTE_KITRINX][i] = rgb565;
+    }
+}
+
+void HuC6260::Reset()
+{
+    m_control_register = 0;
+    m_color_table_address = 0;
+    m_speed = HuC6260_SPEED_5_36_MHZ;
+    m_clock_divider = 4;
+    m_multiple_speeds = false;
+    m_scaled_width = false;
+    m_hpos = 0;
+    m_vpos = 0;
+    m_pixel_index = 0;
+    m_pixel_x = 0;
+    m_hsync = true;
+    m_vsync = true;
+    m_blur = 0;
+    m_active_line = false;
+
+    memset(m_laseractive_line_state, 0, sizeof(m_laseractive_line_state));
+    for (int line = 0; line < HUC6260_LINES; line++)
+    {
+        m_laseractive_line_state[line * 8 + 3] = 0xFF;
+        m_laseractive_line_state[line * 8 + 4] = 0xFF;
+        m_laseractive_line_state[line * 8 + 5] = 0xFF;
+        m_laseractive_line_state[line * 8 + 6] = 0xFF;
+    }
+
+    for (int i = 0; i < 256; i++)
+    {
+        if (m_reset_value < 0)
+        {
+            bool random = (m_random->Next8Bit() & 0x1);
+            u16 and_value = random ? 0x1D0 : 0x1F1;
+            u16 or_value = random ? 0x1C0 : 0x1FC;
+            m_color_table[i] = ((m_random->Next16Bit() & and_value) | or_value);
+            m_color_table[i] = MIN(m_color_table[i] + ((i & 0xFF) >> 2), 0x1FF);
+        }
+        else
+            m_color_table[i] = m_reset_value & 0x1FF;
+    }
+
+    memcpy(m_color_table + 256, m_color_table, 256 * sizeof(u16));
+
+    CalculateScreenBounds();
+    ResetCrop();
+}
+
+u8 HuC6260::ReadRegister(u16 address)
+{
+    GG_CHECK_MEMORY_BREAKPOINT(m_huc6280,
+        HuC6280::HuC6280_BREAKPOINT_TYPE_HUC6260_REGISTER,
+        address & 0x07,
+        true);
+
+    u8 ret = 0xFF;
+
+    switch (address & 0x07)
+    {
+        case 4:
+            // Color table data LSB
+            ret = m_color_table[m_color_table_address] & 0xFF;
+            break;
+        case 5:
+            // Color table data MSB
+            GG_CHECK_MEMORY_BREAKPOINT(m_huc6280,
+                HuC6280::HuC6280_BREAKPOINT_TYPE_PALETTE_RAM,
+                m_color_table_address,
+                true);
+            ret = 0xFE | ((m_color_table[m_color_table_address] >> 8) & 0x01);
+            m_color_table_address = (m_color_table_address + 1) & 0x01FF;
+            break;
+    }
+
+    return ret;
+}
+
+void HuC6260::WriteRegister(u16 address, u8 value)
+{
+    GG_CHECK_MEMORY_BREAKPOINT(m_huc6280,
+        HuC6280::HuC6280_BREAKPOINT_TYPE_HUC6260_REGISTER,
+        address & 0x07,
+        false);
+
+    switch (address & 0x07)
+    {
+        case 0:
+        {
+            // Control register
+            m_control_register = value;
+
+            m_blur = (m_control_register >> 2) & 0x01;
+
+            s32 old_speed = m_speed;
+            m_speed = m_control_register & 0x03;
+
+            if (old_speed != m_speed)
+            {
+                m_screen_start_x = k_huc6260_line_start[m_overscan][m_speed];
+                m_screen_end_x = k_huc6260_line_end[m_overscan][m_speed];
+                m_multiple_speeds = true;
+            }
+
+            switch (m_speed)
+            {
+                case 0:
+                    //Debug("HuC6260 Speed: 5.36 MHz");
+                    m_clock_divider = 4;
+                    break;
+                case 1:
+                    //Debug("HuC6260 Speed: 7.16 MHz");
+                    m_clock_divider = 3;
+                    break;
+                default:
+                    //Debug("HuC6260 Speed: 10.8 MHz");
+                    m_clock_divider = 2;
+                    break;
+            }
+
+            TraceVceEvent(TRACE_VCE_CONTROL_WRITE);
+            break;
+        }
+        case 2:
+            // Color table address LSB
+            m_color_table_address = (m_color_table_address & 0x0100) | value;
+            break;
+        case 3:
+            // Color table address MSB
+            m_color_table_address = (m_color_table_address & 0x00FF) | ((value & 0x01) << 8);
+            break;
+        case 4:
+            // Color table data LSB
+            m_color_table[m_color_table_address] = (m_color_table[m_color_table_address] & 0x0100) | value;
+            break;
+        case 5:
+            // Color table data MSB
+            GG_CHECK_MEMORY_BREAKPOINT(m_huc6280,
+                HuC6280::HuC6280_BREAKPOINT_TYPE_PALETTE_RAM,
+                m_color_table_address,
+                false);
+            m_color_table[m_color_table_address] = (m_color_table[m_color_table_address] & 0x00FF) | ((value & 0x01) << 8);
+
+            TraceVceEvent(TRACE_VCE_COLOR_WRITE);
+            m_color_table_address = (m_color_table_address + 1) & 0x01FF;
+            break;
+        default:
+            // Not used
+            Debug("HuC6260 Write unused register");
+            break;
+    }
+}
+
+void HuC6260::CalculateScreenBounds()
+{
+    m_screen_start_x = k_huc6260_line_start[m_overscan][m_speed];
+    m_screen_end_x = k_huc6260_line_end[m_overscan][m_speed];
+    m_screen_start_y = m_scanline_start + HUC6270_LINES_TOP_BLANKING;
+    m_screen_end_y = m_scanline_end + HUC6270_LINES_TOP_BLANKING + 1;
+}
+
+void HuC6260::ResetCrop()
+{
+    m_crop_min = 0x7FFFFFFF;
+    m_crop_max = -0x7FFFFFFF;
+    m_crop_start = 0;
+    m_crop_end = HUC6260_LINE_LENGTH;
+    m_crop_width = k_huc6260_line_width[1][m_speed];
+}
+
+void HuC6260::CropFrame(bool multiple_speeds)
+{
+    int scale = multiple_speeds ? 1 : m_clock_divider;
+    int width = multiple_speeds ? k_huc6260_scaling_width[1] : k_huc6260_line_width[1][m_speed];
+    int clocks = width * scale;
+    int min_clocks = MIN(k_huc6260_crop_min_clocks[m_speed], clocks);
+
+    if (m_crop_max > m_crop_min)
+    {
+        m_crop_start = m_crop_min;
+        m_crop_end = m_crop_max;
+    }
+
+    m_crop_min = 0x7FFFFFFF;
+    m_crop_max = -0x7FFFFFFF;
+
+    int start = CLAMP(m_crop_start, 0, clocks);
+    int end = CLAMP(m_crop_end, start, clocks);
+
+    if ((end - start) < min_clocks)
+    {
+        start = CLAMP(((start + end) - min_clocks) / 2, 0, clocks - min_clocks);
+        end = start + min_clocks;
+    }
+
+    int x = start / scale;
+    m_crop_width = (end - start) / scale;
+
+    if (m_crop_width == width)
+        return;
+
+    int bytes_per_pixel = (m_pixel_format == GG_PIXEL_RGBA8888) ? 4 : 2;
+    int src_pitch = width * bytes_per_pixel;
+    int dst_pitch = m_crop_width * bytes_per_pixel;
+    u8* src = m_frame_buffer + (x * bytes_per_pixel);
+    u8* dst = m_frame_buffer;
+    int height = GetCurrentHeight();
+
+    for (int line = 0; line < height; line++)
+    {
+        memmove(dst, src, dst_pitch);
+        src += src_pitch;
+        dst += dst_pitch;
+    }
+}
+
+void HuC6260::AdjustForMultipleDividers()
+{
+    int bytes_per_pixel = 2;
+    if (m_pixel_format == GG_PIXEL_RGBA8888)
+        bytes_per_pixel = 4;
+
+    int dominant_width = k_huc6260_scaling_width[m_overscan];
+    u8* src_ptr = m_frame_buffer;
+    int end_line = GetCurrentHeight();
+
+    for (int line = 0; line < end_line; line++)
+    {
+        s32 original_line_speed = m_line_speed[line + m_scanline_start];
+        int original_line_width = k_huc6260_line_width[m_overscan][original_line_speed];
+
+        u8* dest_line = m_scale_buffer + ((line * dominant_width) * bytes_per_pixel);
+
+        switch (original_line_speed)
+        {
+        case 0:
+            for (int pixel = 0; pixel < original_line_width; pixel++)
+            {
+                for (int s = 0; s < 4; s++)
+                {
+                    memcpy(dest_line + (((pixel * 4) + s) * bytes_per_pixel),
+                           src_ptr + (pixel * bytes_per_pixel),
+                           bytes_per_pixel);
+                }
+            }
+            break;
+        case 1:
+            for (int pixel = 0; pixel < original_line_width; pixel++)
+            {
+                for (int s = 0; s < 3; s++)
+                {
+                    memcpy(dest_line + (((pixel * 3) + s) * bytes_per_pixel),
+                           src_ptr + (pixel * bytes_per_pixel),
+                           bytes_per_pixel);
+                }
+            }
+            memcpy(dest_line + ((original_line_width * 3) * bytes_per_pixel),
+                   src_ptr + ((original_line_width - 1) * bytes_per_pixel),
+                   bytes_per_pixel);
+            break;
+        default:
+            for (int pixel = 0; pixel < original_line_width; pixel++)
+            {
+                for (int s = 0; s < 2; s++)
+                {
+                    memcpy(dest_line + (((pixel * 2) + s) * bytes_per_pixel),
+                           src_ptr + (pixel * bytes_per_pixel),
+                           bytes_per_pixel);
+                }
+            }
+            break;
+        }
+
+        src_ptr += (original_line_width * bytes_per_pixel);
+    }
+
+    memcpy(m_frame_buffer, m_scale_buffer, dominant_width * 242 * bytes_per_pixel);
+}
+
+void HuC6260::SetCustomPalette(const u8* data)
+{
+    for (int i = 0; i < 512; i++)
+    {
+        u8 red = data[i * 3];
+        u8 green = data[i * 3 + 1];
+        u8 blue = data[i * 3 + 2];
+
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][0] = red;
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][1] = green;
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][2] = blue;
+        m_rgba888_palette[HuC6260_PALETTE_CUSTOM][i][3] = 255;
+
+        u16 rgb565 = PackRGB565(red, green, blue);
+        m_rgb565_palette[HuC6260_PALETTE_CUSTOM][i] = rgb565;
+    }
+}
+
+void HuC6260::SetLowPassFilter(bool enabled, float intensity, float cutoff_mhz, bool speed_5_36, bool speed_7_16, bool speed_10_8)
+{
+    m_lowpass_enabled = enabled;
+    m_lowpass_intensity = intensity;
+    m_lowpass_cutoff_mhz = cutoff_mhz;
+    m_lowpass_speed[0] = speed_5_36;
+    m_lowpass_speed[1] = speed_7_16;
+    m_lowpass_speed[2] = speed_10_8;
+}
+
+template <int bytes_per_pixel>
+void HuC6260::ApplyLowPassFilter(u8* buffer, int width, int height, int speed)
+{
+    static const float k_speed_mhz[4] = { 5.36f, 7.16f, 10.8f, 10.8f };
+
+    if (!buffer)
+        buffer = m_frame_buffer;
+    if (speed < 0)
+        speed = m_speed;
+    int speed_index = MIN(speed, 2);
+    if (!m_lowpass_speed[speed_index])
+        return;
+
+    float dot_clock = k_speed_mhz[speed];
+    float base_alpha = m_lowpass_cutoff_mhz / dot_clock;
+    base_alpha = CLAMP(base_alpha, 0.3f, 1.0f);
+    float alpha = base_alpha + (1.0f - base_alpha) * (1.0f - m_lowpass_intensity);
+
+    if (alpha >= 1.0f)
+        return;
+
+    if (width == 0)
+        width = m_auto_crop ? m_crop_width : (m_scaled_width ? k_huc6260_scaling_width[m_overscan] : k_huc6260_line_width[m_overscan][m_speed]);
+    if (height == 0)
+        height = GetCurrentHeight();
+
+    for (int y = 0; y < height; y++)
+    {
+        int line_offset = y * width * bytes_per_pixel;
+        float r_prev, g_prev, b_prev;
+
+        if (bytes_per_pixel == 2)
+        {
+            u16 first_pixel = *reinterpret_cast<u16*>(buffer + line_offset);
+            r_prev = ((first_pixel >> 11) & 0x1F) * 255.0f / 31.0f;
+            g_prev = ((first_pixel >> 5) & 0x3F) * 255.0f / 63.0f;
+            b_prev = (first_pixel & 0x1F) * 255.0f / 31.0f;
+        }
+        else
+        {
+            r_prev = buffer[line_offset + 0];
+            g_prev = buffer[line_offset + 1];
+            b_prev = buffer[line_offset + 2];
+        }
+
+        for (int x = 0; x < width; x++)
+        {
+            int idx = line_offset + x * bytes_per_pixel;
+            float r, g, b;
+
+            if (bytes_per_pixel == 2)
+            {
+                u16 pixel = *reinterpret_cast<u16*>(buffer + idx);
+                r = ((pixel >> 11) & 0x1F) * 255.0f / 31.0f;
+                g = ((pixel >> 5) & 0x3F) * 255.0f / 63.0f;
+                b = (pixel & 0x1F) * 255.0f / 31.0f;
+            }
+            else
+            {
+                r = buffer[idx + 0];
+                g = buffer[idx + 1];
+                b = buffer[idx + 2];
+            }
+
+            r = alpha * r + (1.0f - alpha) * r_prev;
+            g = alpha * g + (1.0f - alpha) * g_prev;
+            b = alpha * b + (1.0f - alpha) * b_prev;
+
+            if (bytes_per_pixel == 2)
+            {
+                u8 r8 = RoundToByte(r);
+                u8 g8 = RoundToByte(g);
+                u8 b8 = RoundToByte(b);
+                u16 pixel = PackRGB565(r8, g8, b8);
+                *reinterpret_cast<u16*>(buffer + idx) = pixel;
+            }
+            else
+            {
+                buffer[idx + 0] = (u8)r;
+                buffer[idx + 1] = (u8)g;
+                buffer[idx + 2] = (u8)b;
+            }
+
+            r_prev = r; g_prev = g; b_prev = b;
+        }
+    }
+}
+
+template void HuC6260::ApplyLowPassFilter<2>(u8*, int, int, int);
+template void HuC6260::ApplyLowPassFilter<4>(u8*, int, int, int);
+
+void HuC6260::SaveState(std::ostream& stream)
+{
+    using namespace std;
+    stream.write(reinterpret_cast<const char*> (&m_control_register), sizeof(m_control_register));
+    stream.write(reinterpret_cast<const char*> (&m_color_table_address), sizeof(m_color_table_address));
+    stream.write(reinterpret_cast<const char*> (&m_speed), sizeof(m_speed));
+    stream.write(reinterpret_cast<const char*> (&m_clock_divider), sizeof(m_clock_divider));
+    stream.write(reinterpret_cast<const char*> (m_color_table), sizeof(u16) * 512);
+    stream.write(reinterpret_cast<const char*> (&m_hpos), sizeof(m_hpos));
+    stream.write(reinterpret_cast<const char*> (&m_vpos), sizeof(m_vpos));
+    stream.write(reinterpret_cast<const char*> (&m_pixel_index), sizeof(m_pixel_index));
+    stream.write(reinterpret_cast<const char*> (&m_pixel_x), sizeof(m_pixel_x));
+    stream.write(reinterpret_cast<const char*> (&m_hsync), sizeof(m_hsync));
+    stream.write(reinterpret_cast<const char*> (&m_vsync), sizeof(m_vsync));
+    stream.write(reinterpret_cast<const char*> (&m_blur), sizeof(m_blur));
+    stream.write(reinterpret_cast<const char*> (&m_multiple_speeds), sizeof(m_multiple_speeds));
+    stream.write(reinterpret_cast<const char*> (&m_active_line), sizeof(m_active_line));
+}
+
+void HuC6260::LoadState(std::istream& stream, int version)
+{
+    using namespace std;
+    stream.read(reinterpret_cast<char*> (&m_control_register), sizeof(m_control_register));
+    stream.read(reinterpret_cast<char*> (&m_color_table_address), sizeof(m_color_table_address));
+    stream.read(reinterpret_cast<char*> (&m_speed), sizeof(m_speed));
+    stream.read(reinterpret_cast<char*> (&m_clock_divider), sizeof(m_clock_divider));
+    stream.read(reinterpret_cast<char*> (m_color_table), sizeof(u16) * 512);
+    stream.read(reinterpret_cast<char*> (&m_hpos), sizeof(m_hpos));
+    stream.read(reinterpret_cast<char*> (&m_vpos), sizeof(m_vpos));
+    stream.read(reinterpret_cast<char*> (&m_pixel_index), sizeof(m_pixel_index));
+    stream.read(reinterpret_cast<char*> (&m_pixel_x), sizeof(m_pixel_x));
+    stream.read(reinterpret_cast<char*> (&m_hsync), sizeof(m_hsync));
+    stream.read(reinterpret_cast<char*> (&m_vsync), sizeof(m_vsync));
+    stream.read(reinterpret_cast<char*> (&m_blur), sizeof(m_blur));
+
+    if (version < 42)
+    {
+        u32 black_and_white = 0;
+        stream.read(reinterpret_cast<char*> (&black_and_white), sizeof(black_and_white));
+    }
+
+    stream.read(reinterpret_cast<char*> (&m_multiple_speeds), sizeof(m_multiple_speeds));
+    stream.read(reinterpret_cast<char*> (&m_active_line), sizeof(m_active_line));
+
+    SanitizeState();
+}
+
+void HuC6260::SaveLaserActiveState(std::ostream& stream)
+{
+    int line = CLAMP(m_vpos, 0, HUC6260_LINES - 1);
+    stream.write(reinterpret_cast<const char*>(m_vce_buffer_1 + line * 683), 683 * sizeof(u16));
+    stream.write(reinterpret_cast<const char*>(m_laseractive_classification + line * 683), 683);
+    stream.write(reinterpret_cast<const char*>(m_line_speed + line), sizeof(m_line_speed[0]));
+    stream.write(reinterpret_cast<const char*>(m_laseractive_line_state + line * 8), 8);
+}
+
+void HuC6260::LoadLaserActiveState(std::istream& stream)
+{
+    int line = CLAMP(m_vpos, 0, HUC6260_LINES - 1);
+    stream.read(reinterpret_cast<char*>(m_vce_buffer_1 + line * 683), 683 * sizeof(u16));
+    stream.read(reinterpret_cast<char*>(m_laseractive_classification + line * 683), 683);
+    stream.read(reinterpret_cast<char*>(m_line_speed + line), sizeof(m_line_speed[0]));
+    stream.read(reinterpret_cast<char*>(m_laseractive_line_state + line * 8), 8);
+    m_line_speed[line] = CLAMP(m_line_speed[line], 0, 3);
+}

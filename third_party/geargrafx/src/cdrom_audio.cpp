@@ -1,0 +1,252 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#include "cdrom_audio.h"
+#include "cdrom_media.h"
+#include "trace_logger.h"
+#include "laseractive.h"
+
+CdRomAudio::CdRomAudio(CdRomMedia* cdrom_media, LaserActive* laseractive)
+{
+    m_cdrom_media = cdrom_media;
+    m_laseractive = laseractive;
+    InitPointer(m_cdrom);
+    InitPointer(m_scsi_controller);
+    InitPointer(m_trace_logger);
+    m_buffer_index = 0;
+    m_frame_samples = 0;
+    m_current_state = CD_AUDIO_STATE_STOPPED;
+    m_start_lba = 0;
+    m_stop_lba = 0;
+    m_current_lba = 0;
+    m_seek_start_lba = 0;
+    m_current_sample = 0;
+    m_stop_event = CD_AUDIO_STOP_EVENT_STOP;
+    m_seek_cycles = 0;
+    m_playback_delay_cycles = 0;
+    m_left_sample = 0;
+    m_right_sample = 0;
+    m_sector_cache_lba = 0;
+    m_sector_cache_generation = 0;
+    m_sector_cache_attempted = false;
+    m_sector_cache_valid = false;
+
+    m_state.CURRENT_STATE = &m_current_state;
+    m_state.START_LBA = &m_start_lba;
+    m_state.STOP_LBA = &m_stop_lba;
+    m_state.CURRENT_LBA = &m_current_lba;
+    m_state.CURRENT_SAMPLE = &m_current_sample;
+    m_state.STOP_EVENT = &m_stop_event;
+    m_state.SEEK_CYCLES = &m_seek_cycles;
+    m_state.PLAYBACK_DELAY_CYCLES = &m_playback_delay_cycles;
+    m_state.FRAME_SAMPLES = &m_frame_samples;
+    m_state.BUFFER = m_buffer;
+}
+
+CdRomAudio::~CdRomAudio()
+{
+
+}
+
+void CdRomAudio::Init(CdRom* cdrom, ScsiController* scsi_controller)
+{
+    m_cdrom = cdrom;
+    m_scsi_controller = scsi_controller;
+    Reset();
+}
+
+void CdRomAudio::SetTraceLogger(TraceLogger* trace_logger)
+{
+    m_trace_logger = trace_logger;
+}
+
+void CdRomAudio::LogCdRomAudioEvent(u8 event, u32 lba, u32 param)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    GG_Trace_Entry e = {};
+    e.type = TRACE_CDROM;
+    e.cdrom.event = event;
+    e.cdrom.state = (u8)m_current_state;
+    e.cdrom.irq_type = (u8)m_stop_event;
+    e.cdrom.lba = lba;
+    e.cdrom.param = param;
+    m_trace_logger->TraceLog(e);
+#else
+    UNUSED(event);
+    UNUSED(lba);
+    UNUSED(param);
+#endif
+}
+
+void CdRomAudio::FinishLaserActivePlayback()
+{
+    m_current_lba = m_stop_lba;
+    TraceCdRomAudioEvent(TRACE_CDROM_AUDIO_BOUNDARY, m_stop_lba, m_current_lba);
+
+    if (m_stop_event == CD_AUDIO_STOP_EVENT_LOOP)
+    {
+        m_laseractive->NotifyAudioStart(m_start_lba, false);
+        m_laseractive->SetAudioEnd(m_stop_lba);
+        return;
+    }
+
+    m_current_state = CD_AUDIO_STATE_STOPPED;
+
+    if (m_stop_event == CD_AUDIO_STOP_EVENT_IRQ)
+        m_scsi_controller->StartStatus(ScsiController::SCSI_STATUS_GOOD);
+}
+
+void CdRomAudio::Reset()
+{
+    m_buffer_index = 0;
+    m_frame_samples = 0;
+    m_current_state = CD_AUDIO_STATE_IDLE;
+    m_start_lba = 0;
+    m_stop_lba = 0;
+    m_current_lba = 0;
+    m_seek_start_lba = 0;
+    m_current_sample = 0;
+    m_stop_event = CD_AUDIO_STOP_EVENT_STOP;
+    m_seek_cycles = 0;
+    m_playback_delay_cycles = 0;
+    m_left_sample = 0;
+    m_right_sample = 0;
+    InvalidateSectorCache();
+}
+
+int CdRomAudio::EndFrame(s16* sample_buffer)
+{
+    int samples = 0;
+
+    if (IsValidPointer(sample_buffer))
+    {
+        samples = m_buffer_index;
+        m_frame_samples = m_buffer_index;
+        memcpy(sample_buffer, m_buffer, samples * sizeof(s16));
+    }
+
+    m_buffer_index = 0;
+
+    return samples;
+}
+
+void CdRomAudio::SaveState(std::ostream& stream)
+{
+    using namespace std;
+
+    stream.write(reinterpret_cast<const char*> (&m_frame_samples), sizeof(m_frame_samples));
+    stream.write(reinterpret_cast<const char*> (&m_current_state), sizeof(m_current_state));
+    stream.write(reinterpret_cast<const char*> (&m_start_lba), sizeof(m_start_lba));
+    stream.write(reinterpret_cast<const char*> (&m_stop_lba), sizeof(m_stop_lba));
+    stream.write(reinterpret_cast<const char*> (&m_current_lba), sizeof(m_current_lba));
+    stream.write(reinterpret_cast<const char*> (&m_seek_start_lba), sizeof(m_seek_start_lba));
+    stream.write(reinterpret_cast<const char*> (&m_current_sample), sizeof(m_current_sample));
+    stream.write(reinterpret_cast<const char*> (&m_stop_event), sizeof(m_stop_event));
+    stream.write(reinterpret_cast<const char*> (&m_seek_cycles), sizeof(m_seek_cycles));
+    stream.write(reinterpret_cast<const char*> (&m_playback_delay_cycles), sizeof(m_playback_delay_cycles));
+    stream.write(reinterpret_cast<const char*> (&m_left_sample), sizeof(m_left_sample));
+    stream.write(reinterpret_cast<const char*> (&m_right_sample), sizeof(m_right_sample));
+}
+
+void CdRomAudio::LoadState(std::istream& stream, int version)
+{
+    using namespace std;
+
+    if (version < 32)
+    {
+        s32 sample_cycle_counter = 0;
+        stream.read(reinterpret_cast<char*> (&sample_cycle_counter), sizeof(sample_cycle_counter));
+    }
+
+    if (version >= 40)
+    {
+        stream.read(reinterpret_cast<char*> (&m_frame_samples), sizeof(m_frame_samples));
+
+        m_buffer_index = 0;
+        m_frame_samples = CLAMP(m_frame_samples, 0, GG_AUDIO_BUFFER_SIZE);
+    }
+    else if (version >= 27)
+    {
+        stream.read(reinterpret_cast<char*> (&m_buffer_index), sizeof(m_buffer_index));
+        stream.read(reinterpret_cast<char*> (&m_frame_samples), sizeof(m_frame_samples));
+        stream.read(reinterpret_cast<char*> (m_buffer), sizeof(m_buffer));
+
+        m_buffer_index = CLAMP(m_buffer_index, 0, GG_AUDIO_BUFFER_SIZE - 2);
+        m_buffer_index &= ~1;
+        m_frame_samples = CLAMP(m_frame_samples, 0, GG_AUDIO_BUFFER_SIZE);
+    }
+    else
+    {
+        m_buffer_index = 0;
+        m_frame_samples = 0;
+        memset(m_buffer, 0, sizeof(m_buffer));
+    }
+
+    stream.read(reinterpret_cast<char*> (&m_current_state), sizeof(m_current_state));
+    stream.read(reinterpret_cast<char*> (&m_start_lba), sizeof(m_start_lba));
+    stream.read(reinterpret_cast<char*> (&m_stop_lba), sizeof(m_stop_lba));
+    stream.read(reinterpret_cast<char*> (&m_current_lba), sizeof(m_current_lba));
+
+    if (version >= 32)
+        stream.read(reinterpret_cast<char*> (&m_seek_start_lba), sizeof(m_seek_start_lba));
+    else
+        m_seek_start_lba = m_current_lba;
+
+    stream.read(reinterpret_cast<char*> (&m_current_sample), sizeof(m_current_sample));
+    if (m_current_sample >= (2352 / 4))
+        m_current_sample = 0;
+    stream.read(reinterpret_cast<char*> (&m_stop_event), sizeof(m_stop_event));
+    stream.read(reinterpret_cast<char*> (&m_seek_cycles), sizeof(m_seek_cycles));
+
+    if (version >= 34)
+        stream.read(reinterpret_cast<char*> (&m_playback_delay_cycles), sizeof(m_playback_delay_cycles));
+    else
+        m_playback_delay_cycles = 0;
+
+    stream.read(reinterpret_cast<char*> (&m_left_sample), sizeof(m_left_sample));
+    stream.read(reinterpret_cast<char*> (&m_right_sample), sizeof(m_right_sample));
+
+    InvalidateSectorCache();
+    SyncMediaCurrentSector();
+}
+
+void CdRomAudio::InvalidateSectorCache()
+{
+    m_sector_cache_attempted = false;
+    m_sector_cache_valid = false;
+}
+
+void CdRomAudio::SyncMediaCurrentSector()
+{
+    if ((m_current_state == CD_AUDIO_STATE_PLAYING) ||
+        (m_current_state == CD_AUDIO_STATE_PAUSED) ||
+        (m_seek_cycles > 0))
+    {
+        u32 sector_count = m_cdrom_media->GetSectorCount();
+        if (sector_count == 0)
+            return;
+
+        u32 current_sector = MIN(m_current_lba, sector_count - 1);
+        m_cdrom_media->SetCurrentSector(current_sector);
+
+        s32 track = m_cdrom_media->GetTrackFromLBA(current_sector);
+        if (track >= 0)
+            m_cdrom_media->PreloadTrack((u32)track, current_sector);
+    }
+}

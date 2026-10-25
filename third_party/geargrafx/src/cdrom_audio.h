@@ -1,0 +1,130 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#ifndef CDROM_AUDIO_H
+#define CDROM_AUDIO_H
+
+#include <iostream>
+#include <fstream>
+#include "common.h"
+
+class CdRom;
+class CdRomMedia;
+class ScsiController;
+class TraceLogger;
+class LaserActive;
+
+class CdRomAudio
+{
+public:
+    enum CdAudioStopEvent
+    {
+        CD_AUDIO_STOP_EVENT_STOP,
+        CD_AUDIO_STOP_EVENT_LOOP,
+        CD_AUDIO_STOP_EVENT_IRQ
+    };
+
+    enum CdAudioState
+    {
+        CD_AUDIO_STATE_PLAYING = 0x00,
+        CD_AUDIO_STATE_IDLE = 0x01,
+        CD_AUDIO_STATE_PAUSED = 0x02,
+        CD_AUDIO_STATE_STOPPED = 0x03
+    };
+
+    struct CdRomAudio_State
+    {
+        CdAudioState* CURRENT_STATE;
+        u32* START_LBA;
+        u32* STOP_LBA;
+        u32* CURRENT_LBA;
+        u32* CURRENT_SAMPLE;
+        CdAudioStopEvent* STOP_EVENT;
+        s32* SEEK_CYCLES;
+        s32* PLAYBACK_DELAY_CYCLES;
+        s32* FRAME_SAMPLES;
+        s16* BUFFER;
+    };
+
+public:
+    CdRomAudio(CdRomMedia* cdrom_media, LaserActive* laseractive);
+    ~CdRomAudio();
+    void Init(CdRom* cdrom, ScsiController* scsi_controller);
+    void Reset();
+    void Clock(u32 cycles);
+    void Sample();
+    int EndFrame(s16* sample_buffer);
+    CdAudioState GetCurrentState();
+    CdAudioState GetSubcodeState();
+    u32 GetSubcodeLBA();
+    CdRomAudio_State* GetState();
+    bool IsSeeking();
+    void StartAudio(u32 lba, bool pause);
+    void StopAudio();
+    void PauseAudio();
+    void SetIdle();
+    void SetStopLBA(u32 lba, CdAudioStopEvent event);
+    s16 GetLeftSample();
+    s16 GetRightSample();
+    void SaveState(std::ostream& stream);
+    void LoadState(std::istream& stream, int version = GG_SAVESTATE_VERSION);
+    void SetTraceLogger(TraceLogger* trace_logger);
+    void FinishLaserActivePlayback();
+
+private:
+    void GenerateSamples();
+    void InvalidateSectorCache();
+    void SyncMediaCurrentSector();
+    void TraceCdRomAudioEvent(u8 event, u32 lba, u32 param = 0);
+    void LogCdRomAudioEvent(u8 event, u32 lba, u32 param);
+
+private:
+    CdRom* m_cdrom;
+    CdRomMedia* m_cdrom_media;
+    ScsiController* m_scsi_controller;
+    TraceLogger* m_trace_logger;
+    CdRomAudio_State m_state;
+    s32 m_buffer_index;
+    s32 m_frame_samples;
+    s16 m_buffer[GG_AUDIO_BUFFER_SIZE] = {};
+    CdAudioState m_current_state;
+    u32 m_start_lba;
+    u32 m_stop_lba;
+    u32 m_current_lba;
+    u32 m_seek_start_lba;
+    u32 m_current_sample;
+    CdAudioStopEvent m_stop_event;
+    s32 m_seek_cycles;
+    s32 m_playback_delay_cycles;
+    s16 m_left_sample;
+    s16 m_right_sample;
+    s16 m_sector_cache[2352 / sizeof(s16)] = {};
+    u32 m_sector_cache_lba;
+    u32 m_sector_cache_generation;
+    bool m_sector_cache_attempted;
+    bool m_sector_cache_valid;
+    LaserActive* m_laseractive;
+
+    // DShadof measured delay between seek completion status and audible CD-DA playback.
+    static const u32 k_playback_delay_us = 224000;
+};
+
+#include "cdrom_audio_inline.h"
+
+#endif /* CDROM_AUDIO_H */

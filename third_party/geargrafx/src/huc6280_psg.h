@@ -1,0 +1,134 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#ifndef HUC6280_PSG_H
+#define HUC6280_PSG_H
+
+#include <iostream>
+#include <fstream>
+#include "common.h"
+
+class HuC6280PSG
+{
+public:
+    struct HuC6280PSG_Channel
+    {
+        u8 enabled;
+        u16 frequency;
+        u8 control;
+        u8 amplitude;
+        u8 vol_left;
+        u8 vol_right;
+        u16 gain_left;
+        u16 gain_right;
+        u8 wave;
+        u8 wave_index;
+        u8 wave_data[32];
+        u8 noise_control;
+        u8 noise_enabled;
+        u32 noise_freq;
+        u32 noise_seed;
+        s32 noise_counter;
+        s32 counter;
+        s8 dda;
+        s8 dda_enabled;
+        s16 output[GG_AUDIO_BUFFER_SIZE];
+        s16 left_sample;
+        s16 right_sample;
+        bool mute;
+    };
+
+    struct HuC6280PSG_State
+    {
+        HuC6280PSG_Channel* CHANNELS;
+        u8* CHANNEL_SELECT;
+        u8* MAIN_AMPLITUDE;
+        u16* LFO_FREQUENCY;
+        u8* LFO_CONTROL;
+        s32* FRAME_SAMPLES;
+    };
+
+public:
+    HuC6280PSG();
+    ~HuC6280PSG();
+    void Init();
+    void Reset();
+    void Clock(u32 cycles);
+    void Sample();
+    void Write(u16 address, u8 value);
+    int EndFrame(s16* sample_buffer);
+    void EnableHuC6280A(bool enabled);
+    HuC6280PSG_State* GetState();
+    void SaveState(std::ostream& stream);
+    void LoadState(std::istream& stream, int version = GG_SAVESTATE_VERSION);
+
+private:
+    u16 GetLfoFrequency() const;
+    bool IsLfoConfigured() const;
+    bool IsLfoRunning() const;
+    u16 CalculateLfoPeriod(u16 frequency, u8 data) const;
+    void UpdateWaveformOutput(u8 data);
+    u16 AdvanceWaveform(HuC6280PSG_Channel* channel, int cycles);
+    s16 ScaleSample(u8 data, u16 gain) const;
+    s16 GetWaveformSample(int channel, u16 frequency, u16 gain) const;
+    s64 DivideRounded(s64 value, s64 divisor) const;
+    void RebuildWaveSums();
+    void Sync();
+    void ComputeVolumeLUT();
+    void UpdateChannelVolume(int channel);
+
+private:
+    HuC6280PSG_State m_state;
+    HuC6280PSG_Channel* m_channels;
+    HuC6280PSG_Channel* m_ch;
+    HuC6280PSG_Channel* m_lfo_src;
+    HuC6280PSG_Channel* m_lfo_dest;
+    u8 m_channel_select;
+    u8 m_main_vol;
+    u8 m_main_vol_left;
+    u8 m_main_vol_right;
+    u8 m_lfo_enabled;
+    u16 m_lfo_frequency;
+    u8 m_lfo_control;
+    s32 m_elapsed_cycles;
+    s32 m_frame_samples;
+    s32 m_buffer_index;
+    u16 m_volume_lut[32];
+    u16 m_wave_sum[6];
+    u8 m_dac_offset;
+    float m_hpf_prev_input[2];
+    float m_hpf_prev_output[2];
+};
+
+static const u16 k_huc6280_psg_lfo_zero_divider = 0x100;
+static const s16 k_huc6280_psg_lfo_depth[4] = { 0, 1, 4, 16 };
+static const u16 k_huc6280_psg_analytic_max_period = 5;
+static const int k_huc6280_psg_waveform_samples = 32;
+static const int k_huc6280_psg_sample_scale = 2;
+static const u8 k_huc6280_psg_huc6280_dac_offset = 0;
+static const u8 k_huc6280_psg_huc6280a_dac_offset = 31;
+static const float k_huc6280_psg_output_scale = 0.5f;
+static const u8 k_huc6280_psg_volume_scale[16] = {
+    0x00, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F,
+    0x10, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D, 0x1F
+};
+
+#include "huc6280_psg_inline.h"
+
+#endif /* HUC6280_PSG_H */

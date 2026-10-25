@@ -1,0 +1,276 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#ifndef MEDIA_INLINE_H
+#define MEDIA_INLINE_H
+
+#include "media.h"
+#include "cdrom_media.h"
+
+inline u32 Media::GetCRC()
+{
+    return m_is_cdrom ? m_cdrom_media->GetCRC() : m_crc;
+}
+
+inline bool Media::IsReady()
+{
+    return m_ready;
+}
+
+inline bool Media::IsHES()
+{
+    return m_is_hes;
+}
+
+inline bool Media::IsSGX()
+{
+    return m_is_sgx;
+}
+
+inline bool Media::IsCDROM()
+{
+    return m_is_cdrom;
+}
+
+inline bool Media::IsCDROMHardwareEnabled()
+{
+    return m_cdrom_hardware_enabled;
+}
+
+inline bool Media::IsInGameDatabase()
+{
+    return m_is_in_game_database;
+}
+
+inline float Media::GetADPCMClockSpeed()
+{
+    return m_adpcm_clock_speed;
+}
+
+inline const char* Media::GetGameDatabaseName()
+{
+    return m_game_database_name;
+}
+
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+inline bool Media::IsPhysicalCdRom()
+{
+    return m_is_physical_cdrom;
+}
+
+inline bool Media::HasPhysicalCdRomError()
+{
+    return m_is_physical_cdrom && m_cdrom_media->HasPhysicalDriveError();
+}
+#endif
+
+inline bool Media::IsGameExpress()
+{
+    return m_is_gameexpress;
+}
+
+inline bool Media::IsArcadeCard()
+{
+    return m_mapper == ARCADE_CARD_MAPPER;
+}
+
+inline bool Media::IsMB128()
+{
+    return m_is_mb128;
+}
+
+inline bool Media::IsSyscardBiosLoaded()
+{
+    return m_is_loaded_bios_syscard;
+}
+
+inline bool Media::IsGameExpressBiosLoaded()
+{
+    return m_is_loaded_bios_gameexpress;
+}
+
+inline bool Media::IsSyscardBiosValid()
+{
+    return m_is_valid_bios_syscard;
+}
+
+inline bool Media::IsGameExpressBiosValid()
+{
+    return m_is_valid_bios_gameexpress;
+}
+
+inline bool Media::IsPacBiosLoaded(GG_LaserActive_Region region)
+{
+    return (region == GG_LASERACTIVE_REGION_US) ? m_is_loaded_bios_pac_us :
+        ((region == GG_LASERACTIVE_REGION_JAPAN) && m_is_loaded_bios_pac_japan);
+}
+
+inline bool Media::IsPacBiosValid(GG_LaserActive_Region region)
+{
+    return (region == GG_LASERACTIVE_REGION_US) ? m_is_valid_bios_pac_us :
+        ((region == GG_LASERACTIVE_REGION_JAPAN) && m_is_valid_bios_pac_japan);
+}
+
+inline void Media::SetConsoleType(GG_Console_Type console_type)
+{
+    m_console_type = console_type;
+}
+
+inline GG_Console_Type Media::GetConsoleType()
+{
+    return m_console_type;
+}
+
+inline void Media::SetCDROMType(GG_CDROM_Type cdrom_type)
+{
+    m_cdrom_type = cdrom_type;
+}
+
+inline GG_CDROM_Type Media::GetCDROMType()
+{
+    return m_cdrom_type;
+}
+
+inline void Media::SetLaserActiveRegion(GG_LaserActive_Region region)
+{
+    m_laseractive_region = region;
+    SelectPacBios();
+}
+
+inline GG_LaserActive_Region Media::GetLaserActiveRegion()
+{
+    return m_laseractive_region;
+}
+
+inline GG_LaserActive_Region Media::GetSelectedLaserActiveRegion()
+{
+    return m_selected_laseractive_region;
+}
+
+inline Media::HuCardMapper Media::GetMapper()
+{
+    return m_mapper;
+}
+
+inline void Media::ForceBackupRAM(bool force)
+{
+    m_force_backup_ram = force;
+}
+
+inline bool Media::IsBackupRAMForced()
+{
+    return m_force_backup_ram;
+}
+
+inline void Media::ForceGameExpress(bool force)
+{
+    m_force_gameexpress = force;
+}
+
+inline void Media::PreloadCdRom(bool enable)
+{
+    m_preload_cdrom = enable;
+}
+
+inline bool Media::IsPreloadCdRomEnabled()
+{
+    return m_preload_cdrom;
+}
+
+inline int Media::GetROMSize()
+{
+    return m_rom_size;
+}
+
+inline int Media::GetCardRAMSize()
+{
+    return m_card_ram_size;
+}
+
+inline GG_Keys Media::GetAvenuePad3Button()
+{
+    return m_avenue_pad_3_button;
+}
+
+inline const char* Media::GetFilePath()
+{
+    return m_file_path;
+}
+
+inline const char* Media::GetFileDirectory()
+{
+    return m_file_directory;
+}
+
+inline const char* Media::GetFileName()
+{
+    return m_file_name;
+}
+
+inline const char* Media::GetFileExtension()
+{
+    return m_file_extension;
+}
+
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+inline const char* Media::GetPhysicalCdRomDeviceId()
+{
+    return m_physical_cdrom_device_id;
+}
+#endif
+
+inline const char* Media::GetBiosName(bool syscard)
+{
+    return syscard ? m_bios_name_syscard : m_bios_name_gameexpress;
+}
+
+inline const char* Media::GetPacBiosName(GG_LaserActive_Region region)
+{
+    if (region == GG_LASERACTIVE_REGION_US)
+        return m_bios_name_pac_us;
+    if (region == GG_LASERACTIVE_REGION_JAPAN)
+        return m_bios_name_pac_japan;
+    return "";
+}
+
+inline u32 Media::GetPacBiosCRC(GG_LaserActive_Region region)
+{
+    if (region == GG_LASERACTIVE_REGION_US)
+        return m_bios_crc_pac_us;
+    if (region == GG_LASERACTIVE_REGION_JAPAN)
+        return m_bios_crc_pac_japan;
+    return 0;
+}
+
+inline u8* Media::GetROM()
+{
+    return m_rom;
+}
+
+inline u8** Media::GetROMMap()
+{
+    return m_rom_map;
+}
+
+inline u32* Media::GetROMBankOffset()
+{
+    return m_rom_bank_offset;
+}
+
+#endif /* MEDIA_INLINE_H */

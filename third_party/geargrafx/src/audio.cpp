@@ -1,0 +1,283 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#include <istream>
+#include <ostream>
+#include <assert.h>
+#include "audio.h"
+#include "huc6280_psg.h"
+#include "adpcm.h"
+#include "cdrom_audio.h"
+#include "trace_logger.h"
+
+Audio::Audio(Adpcm* adpcm, CdRomAudio* cdrom_audio)
+{
+    m_adpcm = adpcm;
+    m_cdrom_audio = cdrom_audio;
+    InitPointer(m_psg);
+    InitPointer(m_trace_logger);
+    m_mute = false;
+    m_is_cdrom = false;
+    m_cycle_counter = 0;
+    m_sample_clock_counter = 0;
+    m_master_volume = 1.0f;
+    m_psg_volume = 1.0f;
+    m_adpcm_volume = 1.0f;
+    m_cdrom_volume = 1.0f;
+    m_vgm_recording_enabled = false;
+}
+
+Audio::~Audio()
+{
+    SafeDelete(m_psg);
+}
+
+void Audio::Init()
+{
+    m_psg = new HuC6280PSG();
+    m_psg->Init();
+}
+
+void Audio::SetTraceLogger(TraceLogger* trace_logger)
+{
+    m_trace_logger = trace_logger;
+}
+
+void Audio::LogPsgEvent(u32 address, u8 value)
+{
+#if !defined(GG_DISABLE_DISASSEMBLER)
+    GG_Trace_Entry e = {};
+    e.type = TRACE_PSG;
+    e.psg.channel = *m_psg->GetState()->CHANNEL_SELECT;
+    e.psg.reg = (u8)(address & 0x0F);
+    e.psg.value = value;
+    m_trace_logger->TraceLog(e);
+#else
+    UNUSED(address);
+    UNUSED(value);
+#endif
+}
+
+void Audio::Reset(bool cdrom)
+{
+    m_is_cdrom = cdrom;
+    m_cycle_counter = 0;
+    m_sample_clock_counter = 0;
+    m_psg->Reset();
+
+    memset(m_psg_buffer, 0, sizeof(m_psg_buffer));
+    memset(m_adpcm_buffer, 0, sizeof(m_adpcm_buffer));
+    memset(m_cdrom_buffer, 0, sizeof(m_cdrom_buffer));
+}
+
+void Audio::EndFrame(s16* sample_buffer, int* sample_count)
+{
+    if (!IsValidPointer(sample_buffer) || !IsValidPointer(sample_count))
+    {
+        m_psg->EndFrame(NULL);
+
+        if (m_is_cdrom)
+        {
+            m_adpcm->EndFrame(NULL);
+            m_cdrom_audio->EndFrame(NULL);
+        }
+
+        if (IsValidPointer(sample_count))
+            *sample_count = 0;
+
+        return;
+    }
+
+    *sample_count = 0;
+
+    if (m_is_cdrom)
+    {
+        int count_psg = m_psg->EndFrame(m_psg_buffer);
+        int count_adpcm = m_adpcm->EndFrame(m_adpcm_buffer);
+        int count_cdrom = m_cdrom_audio->EndFrame(m_cdrom_buffer);
+
+        assert(count_psg <= GG_AUDIO_BUFFER_SIZE);
+        assert(count_adpcm <= GG_AUDIO_BUFFER_SIZE);
+        assert(count_cdrom <= GG_AUDIO_BUFFER_SIZE);
+
+        if (count_psg > GG_AUDIO_BUFFER_SIZE)
+        {
+            Error("PSG Audio buffer exceeded maximum size");
+            count_psg = GG_AUDIO_BUFFER_SIZE;
+        }
+        if (count_adpcm > GG_AUDIO_BUFFER_SIZE)
+        {
+            Error("ADPCMM Audio buffer exceeded maximum size");
+            count_adpcm = GG_AUDIO_BUFFER_SIZE;
+        }
+        if (count_cdrom > GG_AUDIO_BUFFER_SIZE)
+        {
+            Error("CDA Audio buffer exceeded maximum size");
+            count_cdrom = GG_AUDIO_BUFFER_SIZE;
+        }
+
+        int samples = count_psg;
+
+        *sample_count = samples;
+
+        if (m_mute)
+            memset(sample_buffer, 0, sizeof(s16) * samples);
+        else if ((m_master_volume == 1.0f) && (m_psg_volume == 1.0f) &&
+            (m_adpcm_volume == 1.0f) && (m_cdrom_volume == 1.0f))
+        {
+            for (int i = 0; i < samples; i++)
+            {
+                s32 mix = (s32)m_psg_buffer[i] + m_adpcm_buffer[i] + m_cdrom_buffer[i];
+                sample_buffer[i] = (s16)CLAMP(mix, -32768, 32767);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < samples; i++)
+            {
+                s32 mix = 0;
+                mix += (s32)(m_psg_buffer[i] * m_psg_volume);
+                mix += (s32)(m_adpcm_buffer[i] * m_adpcm_volume);
+                mix += (s32)(m_cdrom_buffer[i] * m_cdrom_volume);
+                mix = (s32)((float)mix * m_master_volume);
+
+                sample_buffer[i] = (s16)CLAMP(mix, -32768, 32767);
+            }
+        }
+    }
+    else
+    {
+        int samples = m_psg->EndFrame(m_psg_buffer);
+
+        assert(samples <= GG_AUDIO_BUFFER_SIZE);
+
+        if (samples > GG_AUDIO_BUFFER_SIZE)
+        {
+            Error("Audio buffer exceeded maximum size");
+            samples = GG_AUDIO_BUFFER_SIZE;
+        }
+
+        *sample_count = samples;
+
+        if (m_mute || (m_master_volume <= 0.0f) || (m_psg_volume <= 0.0f))
+            memset(sample_buffer, 0, sizeof(s16) * samples);
+        else if ((m_master_volume == 1.0f) && (m_psg_volume == 1.0f))
+            memcpy(sample_buffer, m_psg_buffer, sizeof(s16) * samples);
+        else
+        {
+            for (int i = 0; i < samples; i++)
+            {
+                s32 mix = (s32)(m_psg_buffer[i] * m_psg_volume * m_master_volume);
+
+                sample_buffer[i] = (s16)CLAMP(mix, -32768, 32767);
+            }
+        }
+    }
+
+}
+
+void Audio::SaveState(std::ostream& stream)
+{
+    using namespace std;
+    stream.write(reinterpret_cast<const char*> (&m_cycle_counter), sizeof(m_cycle_counter));
+    stream.write(reinterpret_cast<const char*> (&m_sample_clock_counter), sizeof(m_sample_clock_counter));
+    m_psg->SaveState(stream);
+}
+
+void Audio::LoadState(std::istream& stream, int version)
+{
+    using namespace std;
+    stream.read(reinterpret_cast<char*> (&m_cycle_counter), sizeof(m_cycle_counter));
+    if (version >= 32)
+        stream.read(reinterpret_cast<char*> (&m_sample_clock_counter), sizeof(m_sample_clock_counter));
+    else
+        m_sample_clock_counter = 0;
+    m_psg->LoadState(stream, version);
+}
+
+bool Audio::StartVgmRecording(const char* file_path, int clock_rate, const VgmMetadata& metadata)
+{
+    if (m_vgm_recording_enabled)
+        return false;
+
+    m_vgm_recorder.Start(file_path, clock_rate, metadata);
+    m_vgm_recording_enabled = m_vgm_recorder.IsRecording();
+
+    // Write initial state of all audio registers to VGM
+    if (m_vgm_recording_enabled)
+        WriteVgmInitialState();
+
+    return m_vgm_recording_enabled;
+}
+
+void Audio::WriteVgmInitialState()
+{
+    HuC6280PSG::HuC6280PSG_State* state = m_psg->GetState();
+
+    // R9 trigger has channel 2 side effects, so restore global/LFO state before channel state.
+    m_vgm_recorder.WriteHuC6280(0x0801, *state->MAIN_AMPLITUDE);
+    m_vgm_recorder.WriteHuC6280(0x0808, *state->LFO_FREQUENCY & 0xFF);
+    m_vgm_recorder.WriteHuC6280(0x0809, *state->LFO_CONTROL);
+
+    for (int i = 0; i < 6; i++)
+    {
+        HuC6280PSG::HuC6280PSG_Channel* channel = &state->CHANNELS[i];
+
+        // Reset the waveform address and restore the held DDA latch while the channel is off.
+        m_vgm_recorder.WriteHuC6280(0x0800, i);
+        m_vgm_recorder.WriteHuC6280(0x0804, 0x40);
+        m_vgm_recorder.WriteHuC6280(0x0806, (u8)channel->dda & 0x1F);
+        m_vgm_recorder.WriteHuC6280(0x0804, 0x00);
+
+        // Load waveform RAM sequentially from address zero.
+        for (int j = 0; j < 32; j++)
+            m_vgm_recorder.WriteHuC6280(0x0806, channel->wave_data[j] & 0x1F);
+
+        // Restore the waveform address without changing RAM contents.
+        if (IS_NOT_SET_BIT(channel->control, 6))
+        {
+            for (int j = 0; j < (channel->wave_index & 0x1F); j++)
+                m_vgm_recorder.WriteHuC6280(0x0806, channel->wave_data[j] & 0x1F);
+        }
+
+        m_vgm_recorder.WriteHuC6280(0x0802, channel->frequency & 0xFF);
+        m_vgm_recorder.WriteHuC6280(0x0803, (channel->frequency >> 8) & 0x0F);
+        m_vgm_recorder.WriteHuC6280(0x0805, channel->amplitude);
+        m_vgm_recorder.WriteHuC6280(0x0804, channel->control);
+
+        if (i >= 4)
+            m_vgm_recorder.WriteHuC6280(0x0807, channel->noise_control);
+    }
+
+    m_vgm_recorder.WriteHuC6280(0x0800, *state->CHANNEL_SELECT);
+}
+
+void Audio::StopVgmRecording()
+{
+    if (m_vgm_recording_enabled)
+    {
+        m_vgm_recorder.Stop();
+        m_vgm_recording_enabled = false;
+    }
+}
+
+bool Audio::IsVgmRecording() const
+{
+    return m_vgm_recording_enabled;
+}

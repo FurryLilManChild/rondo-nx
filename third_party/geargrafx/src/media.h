@@ -1,0 +1,206 @@
+/*
+ * Geargrafx - PC Engine / TurboGrafx Emulator
+ * Copyright (C) 2024  Ignacio Sanchez
+
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/
+ *
+ */
+
+#ifndef MEDIA_H
+#define MEDIA_H
+
+#include "common.h"
+
+class CdRomMedia;
+
+class Media
+{
+public:
+    enum HuCardMapper
+    {
+        STANDARD_MAPPER,
+        SF2_MAPPER,
+        ARCADE_CARD_MAPPER
+    };
+
+public:
+    Media(CdRomMedia* cdrom_media);
+    ~Media();
+    void Init();
+    void Reset();
+    u32 GetCRC();
+    bool IsReady();
+    bool IsHES();
+    bool IsSGX();
+    bool IsCDROM();
+    bool IsCDROMHardwareEnabled();
+    bool IsLaserActive();
+    u8* GetMappedBios();
+    int GetMappedBiosSize();
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+    bool IsPhysicalCdRom();
+#endif
+    bool IsInGameDatabase();
+    const char* GetGameDatabaseName();
+    float GetADPCMClockSpeed();
+    bool IsGameExpress();
+    bool IsArcadeCard();
+    bool IsMB128();
+    bool IsSyscardBiosLoaded();
+    bool IsGameExpressBiosLoaded();
+    bool IsSyscardBiosValid();
+    bool IsGameExpressBiosValid();
+    bool IsBiosReady();
+    bool IsPacBiosLoaded(GG_LaserActive_Region region);
+    bool IsPacBiosValid(GG_LaserActive_Region region);
+    void SetConsoleType(GG_Console_Type console_type);
+    GG_Console_Type GetConsoleType();
+    void SetCDROMType(GG_CDROM_Type cdrom_type);
+    GG_CDROM_Type GetCDROMType();
+    void SetLaserActiveRegion(GG_LaserActive_Region region);
+    GG_LaserActive_Region GetLaserActiveRegion();
+    GG_LaserActive_Region GetSelectedLaserActiveRegion();
+    HuCardMapper GetMapper();
+    void ForceBackupRAM(bool force);
+    bool IsBackupRAMForced();
+    void ForceGameExpress(bool force);
+    void PreloadCdRom(bool enable);
+    bool IsPreloadCdRomEnabled();
+    int GetROMSize();
+    int GetCardRAMSize();
+    GG_Keys GetAvenuePad3Button();
+    const char* GetFilePath();
+    const char* GetFileDirectory();
+    const char* GetFileName();
+    const char* GetFileExtension();
+    const char* GetBiosName(bool syscard);
+    const char* GetPacBiosName(GG_LaserActive_Region region);
+    u32 GetPacBiosCRC(GG_LaserActive_Region region);
+    u8* GetROM();
+    u8** GetROMMap();
+    u32* GetROMBankOffset();
+    bool CanAddRomCheats(int count);
+    void AddRomCheat(const GG_Cheat& cheat);
+    void ClearRomCheats();
+    void ApplyRomCheats();
+    void RestoreRomCheats();
+    bool LoadMedia(const char* path, bool softpatching = false);
+    bool LoadHuCardFromBuffer(const u8* buffer, int size, const char* path);
+    bool LoadCueFromFile(const char* path);
+    bool LoadChdFromFile(const char* path);
+    bool LoadMmiFromFile(const char* path);
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+    bool LoadPhysicalCdRom(const char* device_id);
+    const char* GetPhysicalCdRomDeviceId();
+    bool HasPhysicalCdRomError();
+#endif
+    bool LoadBios(const char* file_path, bool syscard);
+    bool LoadBiosFromBuffer(const u8* buffer, int size, bool syscard);
+    bool LoadPacBios(const char* file_path, GG_LaserActive_Region region);
+    bool LoadPacBiosFromBuffer(const u8* buffer, int size, GG_LaserActive_Region region);
+    void UnloadBios(bool syscard);
+    void UnloadPacBios(GG_LaserActive_Region region);
+    void SetTempPath(const char* path);
+    void GatherMediaInfo();
+    bool IsSoftpatchApplied() const;
+    const char* GetSoftpatchPath() const;
+
+private:
+    bool LoadMediaFromZipFile(const char* path, bool softpatching);
+    bool LoadHuCardFromBufferWithSoftpatch(const u8* buffer, int size, const char* path,
+        bool softpatching);
+    bool LoadBiosData(const u8* buffer, int size, bool syscard, const char* path);
+    bool LoadPacBiosData(const u8* buffer, int size, GG_LaserActive_Region region, const char* path);
+    void SelectPacBios();
+    void GatherMediaInfoFromDB();
+    void GatherBIOSInfoFromDB(bool syscard);
+    void GatherDataFromPath(const char* path);
+    void InitRomMAP();
+    bool IsValidFile(const char* path);
+
+private:
+    struct RomCheatUndo
+    {
+        u32 offset;
+        u8 value;
+    };
+
+private:
+    CdRomMedia* m_cdrom_media;
+    u8* m_rom;
+    u8** m_rom_map;
+    u32* m_rom_bank_offset;
+    int m_rom_size;
+    int m_card_ram_size;
+    bool m_ready;
+    char m_file_path[512];
+    char m_file_directory[512];
+    char m_file_name[512];
+    char m_file_extension[512];
+    char m_temp_path[512];
+    u32 m_crc;
+    u32 m_bios_crc_syscard;
+    u32 m_bios_crc_gameexpress;
+    u32 m_bios_crc_pac_japan;
+    u32 m_bios_crc_pac_us;
+    bool m_is_hes;
+    bool m_is_gameexpress;
+    bool m_is_sgx;
+    bool m_is_cdrom;
+    bool m_cdrom_hardware_enabled;
+    bool m_is_mmi;
+    bool m_is_in_game_database;
+    const char* m_game_database_name;
+    float m_adpcm_clock_speed;
+#if defined(GG_ENABLE_PHYSICAL_CDROM)
+    bool m_is_physical_cdrom;
+    char m_physical_cdrom_device_id[256];
+#endif
+    bool m_is_mb128;
+    bool m_is_loaded_bios_syscard;
+    bool m_is_loaded_bios_gameexpress;
+    bool m_is_valid_bios_syscard;
+    bool m_is_valid_bios_gameexpress;
+    bool m_is_loaded_bios_pac_japan;
+    bool m_is_loaded_bios_pac_us;
+    bool m_is_valid_bios_pac_japan;
+    bool m_is_valid_bios_pac_us;
+    char m_bios_name_syscard[64];
+    char m_bios_name_gameexpress[64];
+    char m_bios_name_pac_japan[64];
+    char m_bios_name_pac_us[64];
+    HuCardMapper m_mapper;
+    GG_Keys m_avenue_pad_3_button;
+    GG_Console_Type m_console_type;
+    GG_CDROM_Type m_cdrom_type;
+    GG_LaserActive_Region m_laseractive_region;
+    GG_LaserActive_Region m_selected_laseractive_region;
+    bool m_force_backup_ram;
+    bool m_force_gameexpress;
+    bool m_preload_cdrom;
+    bool m_softpatch_applied;
+    char m_softpatch_path[4096];
+    u8 m_syscard_bios[GG_BIOS_SYSCARD_SIZE] = {};
+    u8 m_gameexpress_bios[GG_BIOS_GAME_EXPRESS_SIZE] = {};
+    u8 m_pac_bios_japan[GG_BIOS_LASERACTIVE_SIZE] = {};
+    u8 m_pac_bios_us[GG_BIOS_LASERACTIVE_SIZE] = {};
+    GG_Cheat m_rom_cheats[GG_MAX_CHEATS];
+    int m_rom_cheat_count;
+    RomCheatUndo m_rom_cheat_undo[GG_MAX_CHEATS];
+    int m_rom_cheat_undo_count;
+};
+
+#include "media_inline.h"
+
+#endif /* MEDIA_H */
