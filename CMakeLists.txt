@@ -68,7 +68,7 @@ target_include_directories(geargrafx_core PUBLIC
   ${GG}/dependencies/zstd
   ${GG}/dependencies/json
   ${GG}/dependencies/qon)
-target_compile_definitions(geargrafx_core PUBLIC Z7_ST ZSTD_DISABLE_ASM NDEBUG EMULATOR_BUILD="rondo-nx")
+target_compile_definitions(geargrafx_core PUBLIC Z7_ST ZSTD_DISABLE_ASM NDEBUG GG_DISABLE_DISASSEMBLER GG_DISABLE_VGMRECORDER EMULATOR_BUILD="rondo-nx")
 if(MSVC)
   target_compile_definitions(geargrafx_core PUBLIC _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
   target_compile_options(geargrafx_core PRIVATE /W0)

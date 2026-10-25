@@ -10,6 +10,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <time.h>
 
 bool g_mcp_stdio_mode = false;
 void rondo_xlat_attach(GeargrafxCore* core, bool enabled);
@@ -114,6 +115,29 @@ int main(int argc, char** argv)
         if (!core[i]->LoadBios(argv[2], true) || !core[i]->LoadMedia(argv[1])) { printf("load failed\n"); return 1; }
     }
     rondo_xlat_attach(core[1], true);
+
+    // Benchmark mode: BENCH=0 runs only the interpreter, BENCH=1 only the translated core.
+    const char* bench = getenv("BENCH");
+    if (bench)
+    {
+        int which = atoi(bench) ? 1 : 0;
+        const int fbs = 2048 * 512 * 4;
+        std::vector<u8> fbb(fbs);
+        std::vector<s16> sb(48000);
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int f = 0; f < frames; f++)
+        {
+            for (size_t i = 0; i < evs.size(); i++)
+                if (evs[i].frame == f) apply(core[which], evs[i]);
+            int n = 0;
+            core[which]->RunToVBlank(fbb.data(), sb.data(), &n);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        printf("bench %s: %d frames in %.2fs = %.0f fps\n", which ? "translated" : "interpreter", frames, secs, frames / secs);
+        return 0;
+    }
 
     const int fbsize = 2048 * 512 * 4;
     std::vector<u8> fb0(fbsize), fb1(fbsize);

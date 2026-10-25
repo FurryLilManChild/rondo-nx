@@ -30,6 +30,23 @@ powershell -ExecutionPolicy Bypass -File tools\win\build_pc.ps1
 
 The result is `out\pc\rondo-nx.exe` with a `rondo-nx.ini` that points at the game files. Logs go to `out\logs\`.
 
+## Building for Switch
+
+Uses your installed devkitPro (`C:\devkitPro`, devkitA64 + libnx):
+
+```
+cd C:\rondo-nx
+powershell -ExecutionPolicy Bypass -File tools\win\build_switch.ps1
+```
+
+It translates the game code, compiles `platforms\switch\rondo-nx.nro` through devkitPro's MSYS2 make, and assembles an SD card folder in `out\switch\sd\`. Copy the `switch` folder inside it to the root of the SD card:
+
+- `switch/rondo-nx/rondo-nx.nro`
+- `switch/rondo-nx/syscard3.pce`
+- `switch/rondo-nx/game/` (the `.cue` and all `.bin` tracks)
+
+Launch from the homebrew menu opened with a title override (hold R while starting a game), so the app gets full memory and the CPU boost clock. Switch controls: Y attack, B jump, X subweapon, + Run, - Select, D-pad or left stick to move, hold + and - together to quit.
+
 ## Controls
 
 | Action | Keyboard | Gamepad |
