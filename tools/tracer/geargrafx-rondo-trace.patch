@@ -1,0 +1,452 @@
+diff --git a/platforms/headless/Makefile b/platforms/headless/Makefile
+new file mode 100644
+index 0000000..995e18b
+--- /dev/null
++++ b/platforms/headless/Makefile
+@@ -0,0 +1,16 @@
++include ../shared/makefiles/Makefile.sources
++CORE_C := $(filter $(DEPS_DIR)/libchdr/% $(DEPS_DIR)/lzma/% $(DEPS_DIR)/miniz/% $(DEPS_DIR)/minivorbis/%,$(SOURCES_C))
++CORE_CXX := $(filter $(SRC_DIR)/%,$(SOURCES_CXX))
++OBJS := $(patsubst %.c,obj/%.o,$(notdir $(CORE_C))) $(patsubst %.cpp,obj/%.o,$(notdir $(CORE_CXX))) obj/main.o obj/qon.o
++vpath %.c $(sort $(dir $(CORE_C)))
++vpath %.cpp $(sort $(dir $(CORE_CXX))) . $(DEPS_DIR)/qon
++INC := -I$(SRC_DIR) -I$(DEPS_DIR)/libchdr/include -I$(DEPS_DIR)/lzma/include -I$(DEPS_DIR)/miniz -I$(DEPS_DIR)/minivorbis -I$(DEPS_DIR)/stb -I$(DEPS_DIR)/zstd -I$(DEPS_DIR)/json -I$(DEPS_DIR)/qon
++FL := $(INC) -w -O2 -DZ7_ST -DZSTD_DISABLE_ASM -DNDEBUG -DEMULATOR_BUILD=\"headless\"
++headless: $(OBJS)
++	g++ -o $@ $(OBJS) -lpthread
++obj/%.o: %.cpp | obj
++	g++ $(FL) -std=gnu++11 -c -o $@ $<
++obj/%.o: %.c | obj
++	gcc $(FL) -std=gnu99 -c -o $@ $<
++obj:
++	mkdir -p obj
+diff --git a/platforms/headless/main.cpp b/platforms/headless/main.cpp
+new file mode 100644
+index 0000000..2b83978
+--- /dev/null
++++ b/platforms/headless/main.cpp
+@@ -0,0 +1,103 @@
++// Headless runner for testing the rondo tracer.
++// usage: headless <cue> <bios> <frames> <script> <outdir>
++// script lines: "<frame> press|release <KEY>", "<frame> shot", "<frame> cheat <code>",
++//               "<frame> save <path>", "<frame> load <path>"
++#include "geargrafx.h"
++#include "rondo_trace.h"
++#include "memory_inline.h"
++bool g_mcp_stdio_mode = false;
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <string>
++#include <vector>
++#define STB_IMAGE_WRITE_IMPLEMENTATION
++#include "stb_image_write.h"
++
++#include <map>
++#include <algorithm>
++extern std::map<u32,u32> g_rt_hist; extern bool g_rt_hist_on;
++struct Ev { int frame; std::string cmd, arg; };
++
++static GG_Keys key_of(const std::string& s)
++{
++    if (s == "I") return GG_KEY_I; if (s == "II") return GG_KEY_II;
++    if (s == "SELECT") return GG_KEY_SELECT; if (s == "RUN") return GG_KEY_RUN;
++    if (s == "UP") return GG_KEY_UP; if (s == "DOWN") return GG_KEY_DOWN;
++    if (s == "LEFT") return GG_KEY_LEFT; if (s == "RIGHT") return GG_KEY_RIGHT;
++    return GG_KEY_NONE;
++}
++
++int main(int argc, char** argv)
++{
++    if (argc < 6) { printf("usage\n"); return 1; }
++    int frames = atoi(argv[3]);
++    std::string out = argv[5];
++    std::vector<Ev> evs;
++    FILE* sf = fopen(argv[4], "r");
++    char line[512];
++    while (sf && fgets(line, sizeof(line), sf))
++    {
++        char cmd[64] = {0}, arg[400] = {0}; int fr;
++        if (line[0] == '#') continue;
++        int n = sscanf(line, "%d %63s %399[^\n]", &fr, cmd, arg);
++        if (n >= 2) evs.push_back({fr, cmd, n == 3 ? arg : ""});
++    }
++    if (sf) fclose(sf);
++
++    rondo_trace_init(out.c_str());
++    GeargrafxCore* core = new GeargrafxCore();
++    core->Init(NULL, GG_PIXEL_RGBA8888);
++    if (!core->LoadBios(argv[2], true)) { printf("bios fail\n"); return 1; }
++    if (!core->LoadMedia(argv[1])) { printf("media fail\n"); return 1; }
++
++    std::vector<u8> fb(2048 * 512 * 4);
++    std::vector<s16> snd(48000);
++    for (int f = 0; f < frames; f++)
++    {
++        for (size_t i = 0; i < evs.size(); i++)
++        {
++            if (evs[i].frame != f) continue;
++            const std::string& c = evs[i].cmd;
++            if (c == "press") core->KeyPressed(GG_CONTROLLER_1, key_of(evs[i].arg));
++            else if (c == "release") core->KeyReleased(GG_CONTROLLER_1, key_of(evs[i].arg));
++            else if (c == "cheat") core->SetCheat(evs[i].arg.c_str());
++            else if (c == "save") core->SaveState(evs[i].arg.c_str());
++            else if (c == "load") core->LoadState(evs[i].arg.c_str());
++            else if (c == "peek")
++            {
++                unsigned b, o, n; sscanf(evs[i].arg.c_str(), "%x %x %u", &b, &o, &n);
++                u8* m = core->GetMemory()->GetMemoryMap()[b];
++                printf("f%d peek %02X:%04X:", f, b, o);
++                for (unsigned k = 0; k < n; k++) printf(" %02X", m[o + k]);
++                printf("\n");
++            }
++            else if (c == "histon") { g_rt_hist.clear(); g_rt_hist_on = true; }
++            else if (c == "histoff")
++            {
++                g_rt_hist_on = false;
++                std::vector<std::pair<u32,u32> > v;
++                for (std::map<u32,u32>::iterator it = g_rt_hist.begin(); it != g_rt_hist.end(); ++it) v.push_back(std::make_pair(it->second, it->first));
++                std::sort(v.rbegin(), v.rend());
++                for (size_t k = 0; k < v.size() && k < 100000; k++) printf("  %02X:%04X %u\n", v[k].second >> 16, v[k].second & 0xFFFF, v[k].first);
++            }
++            else if (c == "poke")
++            {
++                unsigned b, o; char hex[300]; sscanf(evs[i].arg.c_str(), "%x %x %299s", &b, &o, hex);
++                u8* m = core->GetMemory()->GetMemoryMap()[b];
++                for (unsigned k = 0; hex[k*2] && hex[k*2+1]; k++) { unsigned v; sscanf(hex + k*2, "%2x", &v); m[o + k] = (u8)v; }
++            }
++            else if (c == "shot")
++            {
++                GG_Runtime_Info ri; core->GetRuntimeInfo(ri);
++                char p[600]; snprintf(p, sizeof(p), "%s/shot_%06d.png", out.c_str(), f);
++                stbi_write_png(p, ri.screen_width, ri.screen_height, 4, fb.data(), ri.screen_width * 4);
++            }
++        }
++        int sc = 0;
++        core->RunToVBlank(fb.data(), snd.data(), &sc);
++    }
++    rondo_trace_save();
++    char st[128]; rondo_trace_status(st, sizeof(st)); printf("%s\n", st);
++    return 0;
++}
+diff --git a/platforms/mingw/Makefile b/platforms/mingw/Makefile
+new file mode 100644
+index 0000000..64a92e0
+--- /dev/null
++++ b/platforms/mingw/Makefile
+@@ -0,0 +1,21 @@
++include ../shared/makefiles/Makefile.sources
++SDL=/home/claude/deps/SDL3-3.2.24/x86_64-w64-mingw32
++CXX=x86_64-w64-mingw32-g++-posix
++CC=x86_64-w64-mingw32-gcc-posix
++WINDRES=x86_64-w64-mingw32-windres
++OBJECTS += $(SOURCES_C:.c=.o) $(SOURCES_CXX:.cpp=.o)
++INCLUDES += -I$(SRC_DIR) -I$(DESKTOP_SRC_DIR) -I$(DEPS_DIR)/glad -I$(DEPS_DIR)/imgui -I$(DEPS_DIR)/json -I$(DEPS_DIR)/libchdr/include -I$(DEPS_DIR)/lzma/include -I$(DEPS_DIR)/mINI -I$(DEPS_DIR)/minivorbis -I$(DEPS_DIR)/miniz -I$(DEPS_DIR)/qon -I$(DEPS_DIR)/stb -I$(DEPS_DIR)/zstd -I$(SDL)/include
++CPPFLAGS += $(INCLUDES) -w -fno-exceptions -DEMULATOR_BUILD=\"rondo-trace\" -DZ7_ST -DZSTD_DISABLE_ASM -DNDEBUG -O2
++CXXFLAGS += -std=gnu++11 -fno-rtti
++CFLAGS += -std=gnu99
++LDFLAGS += -L$(SDL)/lib -lSDL3 -lopengl32 -lws2_32 -lwinmm -lshell32 -lole32 -lcomdlg32 -static-libgcc -static-libstdc++ -Wl,-Bstatic -lpthread -Wl,-Bdynamic -mwindows
++TARGET=geargrafx.exe
++all: $(TARGET)
++$(TARGET): $(OBJECTS)
++	$(CXX) -o $@ $(OBJECTS) $(LDFLAGS)
++%.o: %.cpp
++	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
++%.o: %.c
++	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
++clean:
++	rm -f $(OBJECTS) $(TARGET)
+diff --git a/platforms/shared/desktop/application.cpp b/platforms/shared/desktop/application.cpp
+index 8fe1726..fe75c43 100644
+--- a/platforms/shared/desktop/application.cpp
++++ b/platforms/shared/desktop/application.cpp
+@@ -35,6 +35,7 @@
+ 
+ #define APPLICATION_IMPORT
+ #include "application.h"
++#include "../../../src/rondo_trace.h"
+ 
+ #if defined(GG_DEBUG)
+ #define WINDOW_TITLE GG_TITLE " " GG_VERSION " (DEBUG)"
+@@ -98,6 +99,13 @@ int application_init(const ApplicationParams& params)
+         return 1;
+     }
+ 
++    {
++        const char* base = SDL_GetBasePath();
++        std::string dir = std::string(base ? base : "./") + "traces";
++        SDL_CreateDirectory(dir.c_str());
++        rondo_trace_init(dir.c_str());
++    }
++
+     if (!gamepad_init())
+     {
+         Error("Failed to initialize gamepad subsystem");
+@@ -198,6 +206,7 @@ void application_destroy(void)
+     macos_remove_dock_menu();
+ #endif
+ 
++    rondo_trace_save();
+     save_window_size();
+     ogl_renderer_destroy();
+     ImGui_ImplSDL3_Shutdown();
+@@ -663,6 +672,20 @@ static void run_emulator(void)
+     emu_audio_rate_control = display_is_vsync_pacing();
+     emu_update();
+ 
++    {
++        static Uint64 last_save = 0, last_title = 0;
++        Uint64 now = SDL_GetTicks();
++        if (now - last_save > 15000) { rondo_trace_save(); last_save = now; }
++        if (now - last_title > 1000)
++        {
++            char status[128], title[256];
++            rondo_trace_status(status, sizeof(status));
++            snprintf(title, sizeof(title), "%s - %s", WINDOW_TITLE, status);
++            SDL_SetWindowTitle(application_sdl_window, title);
++            last_title = now;
++        }
++    }
++
+     events_reset_input();
+ 
+     display_update_vsync_state();
+diff --git a/platforms/shared/makefiles/Makefile.sources b/platforms/shared/makefiles/Makefile.sources
+index 02b39c6..a285e0e 100644
+--- a/platforms/shared/makefiles/Makefile.sources
++++ b/platforms/shared/makefiles/Makefile.sources
+@@ -98,6 +98,7 @@ SOURCES_CXX := \
+     $(SRC_DIR)/huc6260.cpp \
+     $(SRC_DIR)/huc6270.cpp \
+     $(SRC_DIR)/huc6280.cpp \
++    $(SRC_DIR)/rondo_trace.cpp \
+     $(SRC_DIR)/huc6280_functors.cpp \
+     $(SRC_DIR)/huc6280_opcodes.cpp \
+     $(SRC_DIR)/huc6280_psg.cpp \
+diff --git a/src/huc6280_inline.h b/src/huc6280_inline.h
+index 6e4d643..07a11fb 100644
+--- a/src/huc6280_inline.h
++++ b/src/huc6280_inline.h
+@@ -28,6 +28,7 @@
+ #include "memory.h"
+ #include "trace_logger.h"
+ #include "profiler.h"
++#include "rondo_trace.h"
+ 
+ INLINE void HuC6280::TraceCpuEvent()
+ {
+@@ -73,6 +74,8 @@ INLINE u32 HuC6280::RunInstruction(bool* instruction_completed)
+ 
+     TraceCpuEvent();
+ 
++    rondo_trace_instruction(m_memory, m_PC.GetValue());
++
+     u8 opcode = Fetch8();
+     m_cycles += k_huc6280_opcode_cycles[opcode];
+ 
+diff --git a/src/rondo_trace.cpp b/src/rondo_trace.cpp
+new file mode 100644
+index 0000000..62de5b6
+--- /dev/null
++++ b/src/rondo_trace.cpp
+@@ -0,0 +1,179 @@
++#include "rondo_trace.h"
++#include "memory.h"
++#include "memory_inline.h"
++#include "huc6280_timing.h"
++#include <stdio.h>
++#include <string.h>
++#include <time.h>
++#include <vector>
++#include <map>
++#include <string>
++
++namespace {
++
++struct Snapshot
++{
++    u8 bank;
++    u8 page_mask;
++    u64 hash;
++    u8 data[0x2000];
++    u8 exec[0x400];
++};
++
++const int k_max_snapshots = 8000;
++
++std::vector<Snapshot*> g_snaps;
++std::map<std::pair<u8, u64>, int> g_index;
++int g_current[256];
++bool g_enabled = false;
++bool g_dirty = false;
++std::string g_dir;
++std::string g_session;
++FILE* g_cdlog = NULL;
++u32 g_exec_count = 0;
++u32 g_unique_exec = 0;
++} // namespace
++std::map<u32,u32> g_rt_hist; bool g_rt_hist_on = false;
++namespace {
++
++u64 fnv(const u8* p, int n)
++{
++    u64 h = 1469598103934665603ULL;
++    for (int i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; }
++    return h;
++}
++
++int take_snapshot(u8 bank, const u8* src)
++{
++    u64 h = fnv(src, 0x2000);
++    std::pair<u8, u64> key(bank, h);
++    std::map<std::pair<u8, u64>, int>::iterator it = g_index.find(key);
++    if (it != g_index.end())
++        return it->second;
++    if ((int)g_snaps.size() >= k_max_snapshots)
++        return -1;
++    Snapshot* s = new Snapshot();
++    s->bank = bank;
++    s->page_mask = 0;
++    s->hash = h;
++    memcpy(s->data, src, 0x2000);
++    memset(s->exec, 0, sizeof(s->exec));
++    g_snaps.push_back(s);
++    int id = (int)g_snaps.size() - 1;
++    g_index[key] = id;
++    g_dirty = true;
++    return id;
++}
++
++} // namespace
++
++void rondo_trace_init(const char* out_dir)
++{
++    g_dir = out_dir ? out_dir : ".";
++    for (int i = 0; i < 256; i++) g_current[i] = -1;
++    time_t t = time(NULL);
++    struct tm* lt = localtime(&t);
++    char name[64];
++    strftime(name, sizeof(name), "rondo_trace_%Y%m%d_%H%M%S", lt);
++    g_session = name;
++    std::string cd = g_dir + "/" + g_session + "_cdread.txt";
++    g_cdlog = fopen(cd.c_str(), "w");
++    if (g_cdlog)
++        fprintf(g_cdlog, "# pc_bank count addr_lo addr_hi rec_h rec_m rec_l mode  (zero page $F8-$FF at cd_read entry)\n");
++    g_enabled = true;
++}
++
++void rondo_trace_instruction(Memory* memory, u16 pc)
++{
++    if (!g_enabled)
++        return;
++
++    u8 page = pc >> 13;
++    u8 bank = memory->GetMpr(page);
++    if (bank == 0xFF)
++        return;
++
++    u8** map = memory->GetMemoryMap();
++    const u8* src = map[bank];
++    if (!src)
++        return;
++
++    u16 off = pc & 0x1FFF;
++    u8 opcode = src[off];
++    int size = k_huc6280_opcode_sizes[opcode];
++    if (size < 1) size = 1;
++    if (off + size > 0x2000) size = 0x2000 - off;
++
++    int id = g_current[bank];
++    if (id < 0 || memcmp(g_snaps[id]->data + off, src + off, size) != 0)
++    {
++        id = take_snapshot(bank, src);
++        g_current[bank] = id;
++        if (id < 0)
++            return;
++    }
++
++    Snapshot* s = g_snaps[id];
++    u8 bit = 1 << (off & 7);
++    if (!(s->exec[off >> 3] & bit))
++    {
++        s->exec[off >> 3] |= bit;
++        g_unique_exec++;
++        g_dirty = true;
++    }
++    if (!(s->page_mask & (1 << page)))
++    {
++        s->page_mask |= (1 << page);
++        g_dirty = true;
++    }
++    g_exec_count++;
++    if (g_rt_hist_on) g_rt_hist[((u32)bank << 16) | pc]++;
++
++    // System Card cd_read entry ($E009 with BIOS bank 0 in MPR7)
++    if (pc == 0xE009 && bank == 0x00 && g_cdlog)
++    {
++        const u8* zp = map[memory->GetMpr(1)];
++        if (zp)
++        {
++            fprintf(g_cdlog, "%02X %02X %02X %02X %02X %02X %02X %02X\n",
++                memory->GetMpr(4), zp[0xF8], zp[0xFA], zp[0xFB], zp[0xFC], zp[0xFD], zp[0xFE], zp[0xFF]);
++            fflush(g_cdlog);
++        }
++    }
++}
++
++void rondo_trace_save(void)
++{
++    if (!g_enabled || !g_dirty)
++        return;
++    std::string path = g_dir + "/" + g_session + ".rtr";
++    std::string tmp = path + ".tmp";
++    FILE* f = fopen(tmp.c_str(), "wb");
++    if (!f)
++        return;
++    u32 n = (u32)g_snaps.size();
++    fwrite("RTRC", 1, 4, f);
++    u32 ver = 1;
++    fwrite(&ver, 4, 1, f);
++    fwrite(&n, 4, 1, f);
++    for (u32 i = 0; i < n; i++)
++    {
++        Snapshot* s = g_snaps[i];
++        u8 hdr[4] = { s->bank, s->page_mask, 0, 0 };
++        fwrite(hdr, 1, 4, f);
++        fwrite(&s->hash, 8, 1, f);
++        fwrite(s->data, 1, 0x2000, f);
++        fwrite(s->exec, 1, 0x400, f);
++    }
++    fclose(f);
++    remove(path.c_str());
++    rename(tmp.c_str(), path.c_str());
++    g_dirty = false;
++}
++
++void rondo_trace_status(char* buf, int len)
++{
++    snprintf(buf, len, "Trace: %u code images, %u instructions found%s",
++        (unsigned)g_snaps.size(), (unsigned)g_unique_exec,
++        (int)g_snaps.size() >= k_max_snapshots ? " (FULL)" : "");
++}
+diff --git a/src/rondo_trace.h b/src/rondo_trace.h
+new file mode 100644
+index 0000000..359b9c6
+--- /dev/null
++++ b/src/rondo_trace.h
+@@ -0,0 +1,15 @@
++// rondo-nx coverage tracer: records every 8 KB bank image the CPU executes from,
++// plus a bitmap of executed instruction starts, plus System Card cd_read calls.
++#ifndef RONDO_TRACE_H
++#define RONDO_TRACE_H
++
++#include "types.h"
++
++class Memory;
++
++void rondo_trace_init(const char* out_dir);
++void rondo_trace_instruction(Memory* memory, u16 pc);
++void rondo_trace_save(void);
++void rondo_trace_status(char* buf, int len);
++
++#endif
