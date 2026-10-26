@@ -71,8 +71,9 @@ Esc or F1 (keyboard), R3 or Guide (gamepad), ZL + ZR or R3 (Switch). The game pa
 - Resume, Reset
 - Save state / Load state: 5 slots per language, Left/Right picks the slot, the save time is shown
 - Controls: rebind keyboard and gamepad (Switch: controller); a key already in use swaps over; Reset to defaults
-- Options: Language (English/Japanese, switches discs on the spot), Volume, Aspect (4:3 or stretch), and on PC
-  Pixels (sharp/smooth), Fullscreen, Window size
+- Options: Language (English/Japanese, switches discs on the spot), Volume, Aspect (4:3 or stretch), Performance
+  (corner readout: fps, emulation ms per frame average/max, slow frames, disc reads, and on Switch whether the disc
+  is cached in RAM yet), and on PC Pixels (sharp/smooth), Fullscreen, Window size
 - Quit
 
 Menu settings and bindings are kept in `saves/settings.ini`. PC hotkeys: F5 save to the current slot, F7 load it,
