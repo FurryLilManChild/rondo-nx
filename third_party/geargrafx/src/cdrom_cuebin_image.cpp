@@ -57,6 +57,9 @@ void CdRomCueBinImage::Init()
 
 void CdRomCueBinImage::Reset()
 {
+    if (m_bg_handle) { fclose(m_bg_handle); m_bg_handle = NULL; }
+    m_bg_file = 0;
+    m_bg_chunk = 0;
 #if defined(GG_ENABLE_CDROM_CUEBIN_READAHEAD)
     StopReadAheadWorker();
     m_keep_alive_file = NULL;
@@ -1418,6 +1421,7 @@ bool CdRomCueBinImage::LoadChunkUnlocked(ImgFile* img_file, u64 chunk_index)
         u32 to_read = CalculateReadSize(img_file, file_offset);
 
         Debug("Loading chunk %llu from %s", (unsigned long long)chunk_index, img_file->file_path);
+        s_sync_loads++;
         bool read = (to_read != 0) && img_file->file->ReadExact(img_file->chunks[slot], to_read);
 
         if (!read)
@@ -1780,4 +1784,65 @@ void CdRomCueBinImage::CalculateCRC()
     }
 
     SafeDeleteArray(buffer);
+}
+
+
+// ---------------------------------------------------------------- rondo-nx background caching
+
+std::atomic<u32> CdRomCueBinImage::s_sync_loads(0);
+
+bool CdRomCueBinImage::BackgroundPreloadStep()
+{
+    while (m_bg_file < m_img_files.size())
+    {
+        ImgFile* f = m_img_files[m_bg_file];
+        if (!IsValidPointer(f) || f->is_ogg || !f->chunks || f->chunk_cache_count != f->chunk_count ||
+            m_bg_chunk >= f->chunk_count)
+        {
+            if (m_bg_handle) { fclose(m_bg_handle); m_bg_handle = NULL; }
+            m_bg_file++;
+            m_bg_chunk = 0;
+            continue;
+        }
+
+        u64 ci = m_bg_chunk++;
+        {
+#if defined(GG_ENABLE_CDROM_CUEBIN_READAHEAD)
+            std::lock_guard<std::mutex> lock(m_chunk_mutex);
+#endif
+            if (IsChunkLoaded(f, ci))
+                continue;
+        }
+
+        if (!m_bg_handle)
+        {
+            m_bg_handle = fopen(f->file_path, "rb");
+            if (!m_bg_handle) { m_bg_chunk = f->chunk_count; continue; }
+        }
+
+        u64 off = CalculateFileOffset(f, ci);
+        if (off == UINT64_MAX) continue;
+        u32 n = CalculateReadSize(f, off);
+        if (n == 0) continue;
+        u8* buf = new u8[f->chunk_size];
+        bool ok = fseeko(m_bg_handle, (off_t)off, SEEK_SET) == 0 && fread(buf, 1, n, m_bg_handle) == n;
+        if (ok)
+        {
+#if defined(GG_ENABLE_CDROM_CUEBIN_READAHEAD)
+            std::lock_guard<std::mutex> lock(m_chunk_mutex);
+#endif
+            if (!IsChunkLoaded(f, ci))
+            {
+                u64 slot = GetChunkSlot(f, ci);
+                SafeDeleteArray(f->chunks[slot]);
+                f->chunks[slot] = buf;
+                f->cached_chunk_indices[slot] = ci;
+                buf = NULL;
+            }
+        }
+        if (buf) delete[] buf;
+        return true;
+    }
+    if (m_bg_handle) { fclose(m_bg_handle); m_bg_handle = NULL; }
+    return false;
 }

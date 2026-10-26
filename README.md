@@ -58,9 +58,9 @@ Defaults (all rebindable in the menu under Controls):
 | Action | Keyboard | Gamepad | Switch |
 | --- | --- | --- | --- |
 | Move | Arrow keys | D-pad or left stick | D-pad or left stick |
-| Attack (I) | X | X (west) | Y |
-| Jump (II) | Z | A (south) | B |
-| Subweapon (Up + I) | C | Y (north) | X |
+| Attack (II) | X | X (west) | Y |
+| Jump (I) | Z | A (south) | B |
+| Subweapon (Up + II) | C | Y (north) | X |
 | Run (start/pause) | Enter | Start | + |
 | Select | Right Shift | Back | - |
 

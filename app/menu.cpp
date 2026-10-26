@@ -6,7 +6,7 @@
 #include <vector>
 
 static const char* k_bind_names[BIND_COUNT] = {
-    "Up", "Down", "Left", "Right", "Attack (I)", "Jump (II)", "Subweapon", "Run", "Select"};
+    "Up", "Down", "Left", "Right", "Attack (II)", "Jump (I)", "Subweapon", "Run", "Select"};
 static const char* k_bind_keys[BIND_COUNT] = {
     "up", "down", "left", "right", "attack", "jump", "subweapon", "run", "select"};
 
@@ -18,9 +18,10 @@ std::string MenuSettings::Serialize() const
 {
     std::string s;
     char line[128];
-    snprintf(line, sizeof(line), "slot=%d\nvolume=%d\naspect=%d\nsmooth=%d\nfullscreen=%d\nscale=%d\nlanguage=%s\n",
-        slot, volume, aspect, smooth ? 1 : 0, fullscreen ? 1 : 0, scale, language ? "japanese" : "english");
+    snprintf(line, sizeof(line), "slot=%d\nvolume=%d\naspect=%d\nsmooth=%d\nfullscreen=%d\nscale=%d\nlanguage=%s\nperf=%d\n",
+        slot, volume, aspect, smooth ? 1 : 0, fullscreen ? 1 : 0, scale, language ? "japanese" : "english", perf ? 1 : 0);
     s += line;
+    s += "bindings=2\n";
     for (int i = 0; i < BIND_COUNT; i++)
     {
         snprintf(line, sizeof(line), "kb_%s=%d\npad_%s=%d\n", k_bind_keys[i], kb[i], k_bind_keys[i], pad[i]);
@@ -31,6 +32,10 @@ std::string MenuSettings::Serialize() const
 
 void MenuSettings::Parse(const std::string& text)
 {
+    // Bindings version 1 (the first builds) had Attack and Jump wired to the wrong
+    // PC Engine buttons (the game jumps on I and attacks on II), so those entries
+    // are dropped and the defaults kept.
+    bool old_bindings = text.find("bindings=2") == std::string::npos;
     size_t pos = 0;
     while (pos < text.size())
     {
@@ -49,11 +54,13 @@ void MenuSettings::Parse(const std::string& text)
         else if (k == "smooth") smooth = (n != 0);
         else if (k == "fullscreen") fullscreen = (n != 0);
         else if (k == "scale") scale = (n >= 1 && n <= 8) ? n : 4;
+        else if (k == "perf") perf = (n != 0);
         else if (k == "language") language = (v == "japanese" || v == "jp") ? 1 : 0;
         else
         {
             for (int i = 0; i < BIND_COUNT; i++)
             {
+                if (old_bindings && (i == BIND_ATTACK || i == BIND_JUMP || i == BIND_SUBWEAPON)) continue;
                 if (k == std::string("kb_") + k_bind_keys[i]) kb[i] = n;
                 if (k == std::string("pad_") + k_bind_keys[i]) pad[i] = n;
             }
@@ -64,7 +71,7 @@ void MenuSettings::Parse(const std::string& text)
 // ------------------------------------------------------------------ menu logic
 
 enum MainItem { MI_RESUME, MI_RESET, MI_SAVE, MI_LOAD, MI_CONTROLS, MI_OPTIONS, MI_QUIT, MI_COUNT };
-enum OptItem { OI_LANGUAGE, OI_VOLUME, OI_ASPECT, OI_PIXELS, OI_FULLSCREEN, OI_SCALE, OI_BACK };
+enum OptItem { OI_LANGUAGE, OI_VOLUME, OI_ASPECT, OI_PIXELS, OI_FULLSCREEN, OI_SCALE, OI_PERF, OI_BACK };
 
 static std::vector<int> options_items(MenuHost* h)
 {
@@ -73,6 +80,7 @@ static std::vector<int> options_items(MenuHost* h)
     v.push_back(OI_VOLUME);
     v.push_back(OI_ASPECT);
     if (h->HasWindow()) { v.push_back(OI_PIXELS); v.push_back(OI_FULLSCREEN); v.push_back(OI_SCALE); }
+    v.push_back(OI_PERF);
     v.push_back(OI_BACK);
     return v;
 }
@@ -223,6 +231,7 @@ MenuResult Menu::Activate(int dir)
     case OI_ASPECT: m_s->aspect = m_s->aspect ? 0 : 1; return MR_VIDEO;
     case OI_PIXELS: m_s->smooth = !m_s->smooth; return MR_VIDEO;
     case OI_FULLSCREEN: m_s->fullscreen = !m_s->fullscreen; return MR_VIDEO;
+    case OI_PERF: m_s->perf = !m_s->perf; return MR_VIDEO;
     case OI_SCALE:
         if (dir == 0) dir = 1;
         m_s->scale += dir;
@@ -310,6 +319,11 @@ void Menu::Draw(uint8_t* p)
 
     if (!m_open)
     {
+        if (m_s->perf && !m_hud.empty())
+        {
+            Fill(p, 2, 2, (int)m_hud.size() * 8 + 4, 12, 0x000000B0);
+            Text(p, 4, 4, m_hud, C_WHITE);
+        }
         if (m_toast_frames > 0)
         {
             int w = (int)m_toast.size() * 8 + 16;
@@ -418,6 +432,7 @@ void Menu::Draw(uint8_t* p)
         case OI_PIXELS: label = "Pixels"; value = m_s->smooth ? "< Smooth >" : "< Sharp >"; break;
         case OI_FULLSCREEN: label = "Fullscreen"; value = m_s->fullscreen ? "< On >" : "< Off >"; break;
         case OI_SCALE: label = "Window size"; snprintf(buf, sizeof(buf), "< %dx >", m_s->scale); value = buf; break;
+        case OI_PERF: label = "Performance"; value = m_s->perf ? "< Show >" : "< Hide >"; break;
         case OI_BACK: label = "Back"; break;
         }
         Text(p, x0, y, label, c);

@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <thread>
+#include <atomic>
+#include "cdrom_media.h"
+#include "cdrom_cuebin_image.h"
 
 bool g_mcp_stdio_mode = false;
 void rondo_xlat_attach(GeargrafxCore* core, bool enabled);
@@ -116,6 +120,21 @@ int main(int argc, char** argv)
     }
     rondo_xlat_attach(core[1], true);
 
+    // BGCACHE=1: the translated core's disc is cached by a background thread while
+    // both cores run, the way the Switch build does it (checks the caching is invisible).
+    std::atomic<bool> bg_stop(false);
+    std::thread bg;
+    if (getenv("BGCACHE"))
+    {
+        CdRomCueBinImage* img = core[1]->GetCDROMMedia()->GetCueBinImage();
+        bg = std::thread([img, &bg_stop]() {
+            int n = 0;
+            while (!bg_stop && img->BackgroundPreloadStep()) n++;
+            printf("bgcache: %d chunks read in the background\n", n);
+        });
+    }
+    struct BgJoin { std::atomic<bool>* s; std::thread* t; ~BgJoin() { *s = true; if (t->joinable()) t->join(); } } bg_join = {&bg_stop, &bg};
+
     // Benchmark mode: BENCH=0 runs only the interpreter, BENCH=1 only the translated core.
     const char* bench = getenv("BENCH");
     if (bench)
@@ -141,6 +160,7 @@ int main(int argc, char** argv)
     std::vector<u8> fb0(fbsize), fb1(fbsize);
     std::vector<s16> s0(48000), s1(48000);
     int total_bad = 0;
+    unsigned sync0 = CdRomCueBinImage::s_sync_loads.load();
     for (int f = 0; f < frames; f++)
     {
         for (size_t i = 0; i < evs.size(); i++)
@@ -157,5 +177,6 @@ int main(int argc, char** argv)
     }
     printf("lockstep done: %d frames, %d differences, translated blocks run %llu, misses %llu\n",
         frames, total_bad, RondoXlat::s_blocks_run, RondoXlat::s_misses);
+    printf("disc reads on the emulation threads: %u\n", CdRomCueBinImage::s_sync_loads.load() - sync0);
     return total_bad ? 2 : 0;
 }

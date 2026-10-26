@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 #include "geargrafx.h"
+#include "cdrom_media.h"
+#include "cdrom_cuebin_image.h"
 #include "rondo_xlat_rt.h"
 #include "menu.h"
 #include <time.h>
@@ -210,6 +212,121 @@ static void blend_overlay(u32* dst, u32 stride_px, const uint8_t* ov, Rect r)
     }
 }
 
+
+// ---------------------------------------------------------------- presenting on a second core
+//
+// Scaling the picture to 1280x720 and waiting for the display both happen on
+// core 1, so the emulation thread (core 0) gets the whole frame time for the
+// game itself and can start the next frame while this one is being drawn.
+
+struct PresentQueue
+{
+    Mutex lock;
+    CondVar cv;
+    bool has = false;
+    bool quit = false;
+    std::vector<u32> pic;
+    int w = 0, h = 0;
+    Rect r = {0, 0, 1280, 720};
+    bool overlay_on = false;
+    std::vector<uint8_t> overlay;
+};
+static PresentQueue s_pq;
+static Framebuffer s_fb;
+
+static void render_thread(void*)
+{
+    std::vector<u32> pic;
+    std::vector<uint8_t> ov(Menu::W * Menu::H * 4);
+    for (;;)
+    {
+        mutexLock(&s_pq.lock);
+        while (!s_pq.has && !s_pq.quit) condvarWait(&s_pq.cv, &s_pq.lock);
+        if (s_pq.quit) { mutexUnlock(&s_pq.lock); break; }
+        pic.swap(s_pq.pic);
+        int w = s_pq.w, h = s_pq.h;
+        Rect r = s_pq.r;
+        bool ov_on = s_pq.overlay_on;
+        if (ov_on) ov.swap(s_pq.overlay);
+        s_pq.has = false;
+        condvarWakeAll(&s_pq.cv);
+        mutexUnlock(&s_pq.lock);
+
+        u32 stride;
+        u32* px = (u32*)framebufferBegin(&s_fb, &stride);
+        blit(px, stride / 4, pic.data(), w, h, r, 1280, 720);
+        if (ov_on) blend_overlay(px, stride / 4, ov.data(), r);
+        framebufferEnd(&s_fb);
+    }
+}
+
+// Hands a finished frame to the render thread. Waits only if the previous one
+// hasn't been picked up yet (which is what paces emulation to the display).
+static void present(const u8* frame, int w, int h, Rect r, const uint8_t* overlay)
+{
+    mutexLock(&s_pq.lock);
+    while (s_pq.has && !s_pq.quit) condvarWait(&s_pq.cv, &s_pq.lock);
+    s_pq.pic.resize((size_t)w * h);
+    memcpy(s_pq.pic.data(), frame, (size_t)w * h * 4);
+    s_pq.w = w; s_pq.h = h; s_pq.r = r;
+    s_pq.overlay_on = overlay != NULL;
+    if (overlay)
+    {
+        s_pq.overlay.resize(Menu::W * Menu::H * 4);
+        memcpy(s_pq.overlay.data(), overlay, Menu::W * Menu::H * 4);
+    }
+    s_pq.has = true;
+    condvarWakeAll(&s_pq.cv);
+    mutexUnlock(&s_pq.lock);
+}
+
+// ---------------------------------------------------------------- disc caching
+//
+// Reads the whole disc into memory in the background (core 2, low priority) so
+// that music streaming and stage loads never wait on the SD card mid-game.
+
+static Thread s_cache_thread;
+static bool s_cache_running = false;
+static volatile bool s_cache_stop = false;
+static volatile bool s_cache_done = false;
+static CdRomCueBinImage* s_cache_img = NULL;
+
+static void cache_thread(void*)
+{
+    while (!s_cache_stop && s_cache_img->BackgroundPreloadStep()) {}
+    if (!s_cache_stop) s_cache_done = true;
+}
+
+static bool cache_enabled()
+{
+    // Needs room for the whole disc (about 550 MB). A title override launch has
+    // plenty; the album applet doesn't, so it streams from the SD card instead.
+    u64 total = 0, used = 0;
+    svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+    return total > used && total - used > (u64)1200 * 1024 * 1024;
+}
+
+static void cache_start(GeargrafxCore* core)
+{
+    s_cache_done = false;
+    if (!cache_enabled()) return;
+    s_cache_img = core->GetCDROMMedia()->GetCueBinImage();
+    s_cache_stop = false;
+    if (R_FAILED(threadCreate(&s_cache_thread, cache_thread, NULL, NULL, 0x10000, 0x3B, 2))) return;
+    threadStart(&s_cache_thread);
+    s_cache_running = true;
+}
+
+static void cache_stop()
+{
+    if (!s_cache_running) return;
+    s_cache_stop = true;
+    threadWaitForExit(&s_cache_thread);
+    threadClose(&s_cache_thread);
+    s_cache_running = false;
+}
+
 // ---------------------------------------------------------------- menu host (Switch)
 
 static std::string s_saves;
@@ -349,10 +466,15 @@ int main(int argc, char** argv)
     // GPU clock that comes with it doesn't matter. Ignored when launched as an applet.
     appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
 
-    Framebuffer fb;
     NWindow* win = nwindowGetDefault();
-    framebufferCreate(&fb, win, 1280, 720, PIXEL_FORMAT_RGBA_8888, 2);
-    framebufferMakeLinear(&fb);
+    framebufferCreate(&s_fb, win, 1280, 720, PIXEL_FORMAT_RGBA_8888, 2);
+    framebufferMakeLinear(&s_fb);
+    mutexInit(&s_pq.lock);
+    condvarInit(&s_pq.cv);
+    Thread render;
+    bool render_ok = R_SUCCEEDED(threadCreate(&render, render_thread, NULL, NULL, 0x10000, 0x2B, 1));
+    if (render_ok) threadStart(&render);
+    cache_start(core);
 
     audio_init();
 
@@ -365,6 +487,8 @@ int main(int argc, char** argv)
     std::vector<uint8_t> overlay(Menu::W * Menu::H * 4);
     u16 sent = 0;
     int boot = 0;
+    u64 perf_t0 = armGetSystemTick(), perf_sum = 0, perf_max = 0;
+    u32 perf_frames = 0, perf_slow = 0, perf_reads = 0;
     u64 frames = 0;
     bool running = true;
 
@@ -412,6 +536,7 @@ int main(int argc, char** argv)
             core->SaveRam(bram.c_str(), true);
             s_japanese = (ms.language == 1);
             bram = s_saves + (s_japanese ? "/rondo.sav" : "/rondo-en.sav");
+            cache_stop();
             if (core->LoadMedia(cue_for[ms.language].c_str()))
             {
                 if (exists(bram)) core->LoadRam(bram.c_str(), true);
@@ -419,6 +544,7 @@ int main(int argc, char** argv)
                 boot = 0;
                 menu.Toast(s_japanese ? "Japanese" : "English");
             }
+            cache_start(core);
             break;
         case MR_VOLUME: s_volume = ms.volume; break;
         case MR_QUIT: running = false; break;
@@ -466,7 +592,7 @@ int main(int argc, char** argv)
         {
             u16 want = 0;
             static const u16 action_key[BIND_COUNT] = {GG_KEY_UP, GG_KEY_DOWN, GG_KEY_LEFT, GG_KEY_RIGHT,
-                                                       GG_KEY_I, GG_KEY_II, (u16)(GG_KEY_UP | GG_KEY_I), GG_KEY_RUN, GG_KEY_SELECT};
+                                                       GG_KEY_II, GG_KEY_I, (u16)(GG_KEY_UP | GG_KEY_II), GG_KEY_RUN, GG_KEY_SELECT};
             for (int a = 0; a < BIND_COUNT; a++)
                 if (ms.pad[a] >= 0 && (b & BITL(ms.pad[a]))) want |= action_key[a];
             if (b & HidNpadButton_StickLUp) want |= GG_KEY_UP;
@@ -477,23 +603,46 @@ int main(int argc, char** argv)
             send(want);
 
             int count = 0;
+            u64 t0 = armGetSystemTick();
             core->RunToVBlank(frame.data(), snd.data(), &count);
+            u64 dt = armTicksToNs(armGetSystemTick() - t0);
+            perf_sum += dt;
+            if (dt > perf_max) perf_max = dt;
+            if (dt > 16600000ULL) perf_slow++;
+            perf_frames++;
             audio_push(snd.data(), count);
         }
         menu.Tick();
 
+        // Performance readout, refreshed once a second.
+        u64 now = armGetSystemTick();
+        if (armTicksToNs(now - perf_t0) >= 1000000000ULL)
+        {
+            double secs = armTicksToNs(now - perf_t0) / 1e9;
+            u32 reads = CdRomCueBinImage::s_sync_loads.load();
+            char hud[48];
+            snprintf(hud, sizeof(hud), "%2.0ffps %4.1f/%4.1fms slow%2u rd%2u %s",
+                perf_frames / secs, perf_frames ? perf_sum / 1e6 / perf_frames : 0.0, perf_max / 1e6,
+                perf_slow, reads - perf_reads, s_cache_done ? "RAM" : (s_cache_running ? "..." : "SD"));
+            menu.SetHud(hud);
+            perf_t0 = now; perf_sum = 0; perf_max = 0; perf_frames = 0; perf_slow = 0; perf_reads = reads;
+        }
+
         GG_Runtime_Info ri;
         core->GetRuntimeInfo(ri);
         Rect r = fit_rect(ri.aspect_ratio > 0 ? ri.aspect_ratio : 4.0f / 3.0f, ms.aspect == 1, 1280, 720);
-        u32 stride;
-        u32* px = (u32*)framebufferBegin(&fb, &stride);
-        blit(px, stride / 4, (const u32*)frame.data(), ri.screen_width, ri.screen_height, r, 1280, 720);
-        if (menu.Visible())
+        bool ov = menu.Visible();
+        if (ov) menu.Draw(overlay.data());
+        if (render_ok)
+            present(frame.data(), ri.screen_width, ri.screen_height, r, ov ? overlay.data() : NULL);
+        else
         {
-            menu.Draw(overlay.data());
-            blend_overlay(px, stride / 4, overlay.data(), r);
+            u32 stride;
+            u32* px = (u32*)framebufferBegin(&s_fb, &stride);
+            blit(px, stride / 4, (const u32*)frame.data(), ri.screen_width, ri.screen_height, r, 1280, 720);
+            if (ov) blend_overlay(px, stride / 4, overlay.data(), r);
+            framebufferEnd(&s_fb);
         }
-        framebufferEnd(&fb);
 
         if (++frames % 1800 == 0)
             core->SaveRam(bram.c_str(), true);
@@ -501,8 +650,18 @@ int main(int argc, char** argv)
 
     core->SaveRam(bram.c_str(), true);
     save_settings();
+    cache_stop();
+    if (render_ok)
+    {
+        mutexLock(&s_pq.lock);
+        s_pq.quit = true;
+        condvarWakeAll(&s_pq.cv);
+        mutexUnlock(&s_pq.lock);
+        threadWaitForExit(&render);
+        threadClose(&render);
+    }
     appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
-    framebufferClose(&fb);
+    framebufferClose(&s_fb);
     if (s_audio_ok) { audoutStopAudioOut(); audoutExit(); }
     return 0;
 }

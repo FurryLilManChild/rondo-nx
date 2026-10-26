@@ -191,9 +191,9 @@ static u16 action_keys(const bool* act)
     if (act[BIND_DOWN]) k |= GG_KEY_DOWN;
     if (act[BIND_LEFT]) k |= GG_KEY_LEFT;
     if (act[BIND_RIGHT]) k |= GG_KEY_RIGHT;
-    if (act[BIND_ATTACK]) k |= GG_KEY_I;
-    if (act[BIND_JUMP]) k |= GG_KEY_II;
-    if (act[BIND_SUBWEAPON]) k |= GG_KEY_UP | GG_KEY_I;
+    if (act[BIND_ATTACK]) k |= GG_KEY_II;   // Rondo attacks on II
+    if (act[BIND_JUMP]) k |= GG_KEY_I;      // and jumps on I
+    if (act[BIND_SUBWEAPON]) k |= GG_KEY_UP | GG_KEY_II;
     if (act[BIND_RUN]) k |= GG_KEY_RUN;
     if (act[BIND_SELECT]) k |= GG_KEY_SELECT;
     return k;
@@ -305,6 +305,8 @@ int main(int argc, char** argv)
     const double frame_ns = 1e9 / 59.826;
     Uint64 next = SDL_GetTicksNS();
     Uint64 last_title = 0, last_bram = SDL_GetTicks();
+    double perf_sum = 0, perf_max = 0;
+    int perf_n = 0;
     int frames = 0;
     int boot_frame = 0;
     bool running = true, fast = false;
@@ -511,7 +513,12 @@ int main(int argc, char** argv)
             for (int r = 0; r < runs; r++)
             {
                 int count = 0;
+                Uint64 t0 = SDL_GetPerformanceCounter();
                 g_core->RunToVBlank(fb.data(), snd.data(), &count, NULL, r == runs - 1);
+                double ms_f = (SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+                perf_sum += ms_f;
+                if (ms_f > perf_max) perf_max = ms_f;
+                perf_n++;
                 if (audio && !fast && count > 0)
                     SDL_PutAudioStreamData(audio, snd.data(), count * (int)sizeof(s16));
                 frames++;
@@ -566,6 +573,11 @@ int main(int argc, char** argv)
                 snprintf(title, sizeof(title), "rondo-nx (%s)  |  %d fps  |  %s: %.1f%% of instructions",
                     g_japanese ? "Japanese" : "English", frames, cfg.xlat ? "translated" : "interpreter only", cfg.xlat ? pct : 0.0);
             SDL_SetWindowTitle(win, title);
+            char hud[48];
+            snprintf(hud, sizeof(hud), "%2dfps %4.1f/%4.1fms %4.1f%%", frames, perf_n ? perf_sum / perf_n : 0.0, perf_max,
+                cfg.xlat ? pct : 0.0);
+            menu.SetHud(hud);
+            perf_sum = 0; perf_max = 0; perf_n = 0;
             frames = 0;
             last_title = now_ms;
         }

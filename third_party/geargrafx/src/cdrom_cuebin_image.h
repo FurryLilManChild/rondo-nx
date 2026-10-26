@@ -28,6 +28,7 @@
 #endif
 
 #include <vector>
+#include <stdio.h>
 #include "cdrom_image.h"
 
 #define GG_CDROM_CUEBIN_KEEPALIVE_SECONDS 5
@@ -117,6 +118,14 @@ public:
     virtual bool PreloadTrack(u32 track_number, u32 lba) override;
     void SetLoadOptions(const GG_CdRomCueBinLoadOptions& options);
 
+    // rondo-nx: background disc caching. Call from a worker thread (owned by the
+    // front end) until it returns false. Each call reads one chunk through the
+    // worker's own file handle, outside the cache lock, so the emulation thread
+    // never waits on storage for it. Stop calling before the disc is reloaded.
+    bool BackgroundPreloadStep();
+    // Disc reads the emulation thread had to do itself (cache misses).
+    static std::atomic<u32> s_sync_loads;
+
 protected:
     bool LoadFromCueData(const char* source_path, const u8* cue_data, size_t cue_size,
         bool preload, GG_CdRomCueFileResolver resolver, void* resolver_user_data);
@@ -162,6 +171,9 @@ private:
 
 private:
     std::vector<ImgFile*> m_img_files;
+    size_t m_bg_file = 0;
+    u64 m_bg_chunk = 0;
+    FILE* m_bg_handle = NULL;
     std::vector<TrackFile> m_track_files;
     GG_CdRomCueBinLoadOptions m_load_options;
     GG_CdRomCueFileResolver m_file_resolver;

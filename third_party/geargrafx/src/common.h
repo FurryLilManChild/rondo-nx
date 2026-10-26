@@ -389,6 +389,11 @@ inline FILE* fopen_utf8(const char* path, const char* mode)
 
 inline bool rename_file_utf8(const char* from, const char* to)
 {
+    if (rename(from, to) == 0)
+        return true;
+    // The Switch SD card (FAT via libnx) won't rename onto an existing file:
+    // the new file is already complete, so drop the old one and retry.
+    remove(to);
     return rename(from, to) == 0;
 }
 

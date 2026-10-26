@@ -42,7 +42,7 @@ INC  := -I$(GG)/src -I$(GG)/dependencies/libchdr/include -I$(GG)/dependencies/lz
         -I$(PORTLIBS)/include
 
 ARCH     := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
-DEFS     := -D__SWITCH__ -DHAVE_LIBNX -DMINIZ_NO_TIME -DGG_DISABLE_DISASSEMBLER -DGG_DISABLE_VGMRECORDER -DZ7_ST -DZSTD_DISABLE_ASM -DNDEBUG -DEMULATOR_BUILD=\"rondo-nx\"
+DEFS     := -D__SWITCH__ -DHAVE_LIBNX -DMINIZ_NO_TIME -DGG_DISABLE_DISASSEMBLER -DGG_DISABLE_VGMRECORDER -DGG_ENABLE_CDROM_CUEBIN_READAHEAD -DZ7_ST -DZSTD_DISABLE_ASM -DNDEBUG -DEMULATOR_BUILD=\"rondo-nx\"
 CFLAGS   := -O3 -ffunction-sections -fdata-sections $(ARCH) $(DEFS) $(INC) -w
 CXXFLAGS := $(CFLAGS) -std=gnu++11 -fno-rtti -fno-exceptions
 LDFLAGS  := -specs=$(DEVKITPRO)/libnx/switch.specs $(ARCH) -Wl,--gc-sections -Wl,-Map,$(BUILD)/rondo-nx.map

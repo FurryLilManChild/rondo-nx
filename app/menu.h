@@ -40,6 +40,7 @@ struct MenuSettings
     bool fullscreen = false;
     int scale = 4;           // window size multiplier (PC)
     int language = 0;        // 0 = English, 1 = Japanese
+    bool perf = false;       // performance readout in the corner
     int kb[BIND_COUNT];      // keyboard code per action (-1 = none)
     int pad[BIND_COUNT];     // gamepad button code per action (-1 = none)
     MenuSettings() { for (int i = 0; i < BIND_COUNT; i++) { kb[i] = -1; pad[i] = -1; } }
@@ -80,7 +81,10 @@ public:
     void Tick();                            // once per frame: timeouts and toasts
 
     void Toast(const std::string& text);
-    bool Visible() const { return m_open || m_toast_frames > 0; }
+    bool Visible() const { return m_open || m_toast_frames > 0 || (m_s->perf && !m_hud.empty()); }
+
+    // Performance readout text (shown in the top left corner when settings.perf is on).
+    void SetHud(const std::string& text) { m_hud = text; }
 
     // Draws the overlay. Pixels are RGBA bytes, W*H*4, fully rewritten each call.
     void Draw(uint8_t* rgba);
@@ -103,6 +107,7 @@ private:
     int m_capture_col = 0;
     int m_capture_frames = 0;
     std::string m_toast;
+    std::string m_hud;
     int m_toast_frames = 0;
     int m_lang_pending = -1;    // language change waiting for confirmation
 };

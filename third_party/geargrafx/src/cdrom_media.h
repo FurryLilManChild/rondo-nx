@@ -43,6 +43,7 @@ class CdRomMedia
 public:
     CdRomMedia();
     ~CdRomMedia();
+    CdRomCueBinImage* GetCueBinImage() { return m_cue_bin_image; }
     void Init(LaserActive* laseractive);
     void Reset();
     bool IsReady();
