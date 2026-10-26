@@ -4,6 +4,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
+#include <time.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 static const char* k_bind_names[BIND_COUNT] = {
     "Up", "Down", "Left", "Right", "Attack (II)", "Jump (I)", "Subweapon", "Run", "Select"};
@@ -445,4 +450,43 @@ void Menu::Draw(uint8_t* p)
     }
     else
         Text(p, 28, H - 26, "Left/Right: change  Back: return", C_DIM);
+}
+
+// ------------------------------------------------------------------ save backups
+
+void BackupSaveFile(const std::string& path)
+{
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return;
+    std::vector<unsigned char> data;
+    unsigned char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) data.insert(data.end(), buf, buf + n);
+    fclose(f);
+    bool any = false;
+    for (size_t i = 0; i < data.size(); i++) if (data[i]) { any = true; break; }
+    if (!any) return;
+
+    size_t slash = path.find_last_of("/\\");
+    std::string dir = slash == std::string::npos ? std::string(".") : path.substr(0, slash);
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    size_t dot = name.rfind('.');
+    std::string stem = dot == std::string::npos ? name : name.substr(0, dot);
+    std::string bdir = dir + "/backups";
+#ifdef _WIN32
+    _mkdir(bdir.c_str());
+#else
+    mkdir(bdir.c_str(), 0777);
+#endif
+    time_t t = time(NULL);
+    struct tm* lt = localtime(&t);
+    char date[16];
+    strftime(date, sizeof(date), "%Y%m%d", lt);
+    std::string out = bdir + "/" + stem + "-" + date + ".sav";
+    FILE* chk = fopen(out.c_str(), "rb");
+    if (chk) { fclose(chk); return; }
+    FILE* o = fopen(out.c_str(), "wb");
+    if (!o) return;
+    fwrite(data.data(), 1, data.size(), o);
+    fclose(o);
 }

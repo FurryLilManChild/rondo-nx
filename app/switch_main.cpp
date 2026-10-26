@@ -457,6 +457,7 @@ int main(int argc, char** argv)
         show_error("The disc image or System Card failed to load.");
         return 0;
     }
+    BackupSaveFile(bram);
     if (exists(bram)) core->LoadRam(bram.c_str(), true);
     rondo_xlat_attach(core, xlat);
 
@@ -509,7 +510,7 @@ int main(int argc, char** argv)
     {
         switch (r)
         {
-        case MR_RESET: core->ResetMedia(false); boot = 0; menu.Toast("Reset"); break;
+        case MR_RESET: core->ResetMedia(true); boot = 0; menu.Toast("Reset"); break;
         case MR_SAVE_STATE:
         {
             char t[40];
@@ -539,6 +540,7 @@ int main(int argc, char** argv)
             cache_stop();
             if (core->LoadMedia(cue_for[ms.language].c_str()))
             {
+                BackupSaveFile(bram);
                 if (exists(bram)) core->LoadRam(bram.c_str(), true);
                 core->ResetMedia(true);
                 boot = 0;

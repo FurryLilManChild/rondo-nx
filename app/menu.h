@@ -114,4 +114,8 @@ private:
 
 const char* BindActionName(int a);
 
+// Copies a game save file to <its folder>/backups/<name>-YYYYMMDD.sav, once a day,
+// skipping an empty (all zero) file, so a bad write can always be rolled back.
+void BackupSaveFile(const std::string& path);
+
 #endif

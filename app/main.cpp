@@ -279,6 +279,7 @@ int main(int argc, char** argv)
     }
     // Separate saves per language: the two discs keep different save data.
     std::string bram = join(cfg.saves, g_japanese ? "rondo.sav" : "rondo-en.sav");
+    BackupSaveFile(bram);
     if (file_exists(bram)) g_core->LoadRam(bram.c_str(), true);
     rondo_xlat_attach(g_core, cfg.xlat);
 
@@ -326,7 +327,7 @@ int main(int argc, char** argv)
         switch (r)
         {
         case MR_RESET:
-            g_core->ResetMedia(false);
+            g_core->ResetMedia(true);
             boot_frame = 0;
             menu.Toast("Reset");
             break;
@@ -360,6 +361,7 @@ int main(int argc, char** argv)
             bram = join(cfg.saves, g_japanese ? "rondo.sav" : "rondo-en.sav");
             if (g_core->LoadMedia(next_cue.c_str()))
             {
+                BackupSaveFile(bram);
                 if (file_exists(bram)) g_core->LoadRam(bram.c_str(), true);
                 g_core->ResetMedia(true);
                 boot_frame = 0;
