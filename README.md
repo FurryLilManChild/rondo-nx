@@ -4,6 +4,27 @@ A native port of Castlevania: Rondo of Blood (PC Engine Super CD-ROM², 1993), b
 
 No game data is in this repository. The game's code is translated locally from coverage traces of your own disc, and the app reads your disc image and System Card at run time.
 
+## Status
+
+**Version 0.5.0 is a test release for the Switch.** It has been played on a V1 Switch (Atmosphère) and runs well,
+but it has not been played to the end on the Switch yet. Every stage, alternate stage and boss was traced, and the
+translated code matches the emulator frame by frame. Release notes: [docs/release/rondo-nx-0.5.0.md](docs/release/rondo-nx-0.5.0.md).
+
+## Download and install (Switch)
+
+You need a Switch with custom firmware (Atmosphère), your own System Card 3.0 BIOS, and your own disc with the
+English fan translation v1.03 applied (a `.cue` with its `.bin` tracks). Nothing from the game is included.
+
+1. Download `rondo-nx-v0.5.0-switch.zip` from this repository's **Releases** page and extract it to the root of your
+   SD card. It makes `switch/rondo-nx/`.
+2. Copy the System Card to `switch/rondo-nx/syscard3.pce`.
+3. Copy the English `.cue` and all of its `.bin` tracks into `switch/rondo-nx/game/`. Optional: the Japanese original
+   in `switch/rondo-nx/game-jp/` adds a Japanese option.
+4. Hold **R** while opening any game to get the homebrew menu with full memory, then start **rondo-nx**.
+
+To report a problem, open an issue with where in the game it happened, what you saw, your Atmosphère version and the
+language you were playing in.
+
 ## How it works
 
 1. **Coverage tracing** (`tools/tracer`): a patched Geargrafx build logs every piece of code the game runs, including code it loads from disc mid-game.
@@ -81,4 +102,12 @@ F11 or Alt+Enter fullscreen, F9 switch translated code / interpreter, Tab fast-f
 
 ## License
 
-Code in this repository is GPL-3.0, because it builds on the Geargrafx core (`third_party/geargrafx/LICENSE`).
+Code in this repository is GPL-3.0, because it builds on the Geargrafx core by Ignacio Sanchez
+(`third_party/geargrafx/LICENSE`). Unofficial and fan-made; no affiliation with Konami or Nintendo.
+
+## Making a release
+
+After a Switch build (`tools\win\build_switch.ps1 -NoGameCopy`), run
+`powershell -ExecutionPolicy Bypass -File tools\win\package_release.ps1`. It relinks the `.nro` with the version in
+`platforms/switch/Makefile` (no re-translation), and writes `out\release\rondo-nx-v<version>-switch.zip` with no game
+files or System Card in it.

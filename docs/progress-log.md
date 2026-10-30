@@ -51,3 +51,12 @@ Newest first.
 - Measure Switch frame time. If tight: smaller framebuffer scaled by the compositor, LTO, then the native renderer.
 - English: the fan translation as a second data track (needs its own trace pass or a static scan of changed code).
 - Replace hardware layers with native code over time (renderer first), then drop the System Card via HLE.
+
+## 2026-10-30: release 0.5.0 (test release) prepared
+
+- Version 0.5.0 in the homebrew menu (`APP_VERSION`); the .nacp now rebuilds when the Makefile changes.
+- `tools/win/package_release.ps1`: relinks the tested build with the new version (no re-translation), makes
+  `out/release/rondo-nx-v0.5.0-switch.zip` (NRO, readme, game-folder note, GPL licence; no disc, BIOS or saves, checked),
+  prints its SHA-256.
+- README: status, download/install, problem reports, release steps. Release notes: `docs/release/rondo-nx-0.5.0.md`.
+
