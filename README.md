@@ -6,17 +6,17 @@ No game data is in this repository. The game's code is translated locally from c
 
 ## Status
 
-**Version 1.1 is the current Switch release** (cheats menu, background save states). It has been played on a V1
-Switch (Atmosphère) and runs well, but it has not been played to the end on the Switch yet. Every stage, alternate
-stage and boss was traced, and the translated code matches the emulator frame by frame. Release notes:
-[docs/release/rondo-nx-1.1.md](docs/release/rondo-nx-1.1.md) (1.0: [docs/release/rondo-nx-0.5.0.md](docs/release/rondo-nx-0.5.0.md), published as 1.0).
+**Version 1.2 is the current Switch release** (experimental widescreen). It has been played on a V1 Switch
+(Atmosphère) and runs well, but it has not been played to the end on the Switch yet. Every stage, alternate stage and
+boss was traced, and the translated code matches the emulator frame by frame. Release notes:
+[docs/release/rondo-nx-1.2.md](docs/release/rondo-nx-1.2.md) (1.1: [docs/release/rondo-nx-1.1.md](docs/release/rondo-nx-1.1.md); 1.0: [docs/release/rondo-nx-0.5.0.md](docs/release/rondo-nx-0.5.0.md), published as 1.0).
 
 ## Download and install (Switch)
 
 You need a Switch with custom firmware (Atmosphère), your own System Card 3.0 BIOS, and your own disc with the
 English fan translation v1.03 applied (a `.cue` with its `.bin` tracks). Nothing from the game is included.
 
-1. Download `rondo-nx-v1.1-switch.zip` from this repository's **Releases** page and extract it to the root of your
+1. Download `rondo-nx-v1.2-switch.zip` from this repository's **Releases** page and extract it to the root of your
    SD card. It makes `switch/rondo-nx/`.
 2. Copy the System Card to `switch/rondo-nx/syscard3.pce`.
 3. Copy the English `.cue` and all of its `.bin` tracks into `switch/rondo-nx/game/`. Optional: the Japanese original
@@ -93,7 +93,7 @@ Esc or F1 (keyboard), R3 or Guide (gamepad), ZL + ZR or R3 (Switch). The game pa
 - Resume, Reset
 - Save state / Load state: 5 slots per language, Left/Right picks the slot, the save time is shown
 - Controls: rebind keyboard and gamepad (Switch: controller); a key already in use swaps over; Reset to defaults
-- Options: Language (English/Japanese, switches discs on the spot), Volume, Aspect (4:3 or stretch), Performance
+- Options: Language (English/Japanese, switches discs on the spot), Volume, Aspect (4:3, stretch, or experimental widescreen), Performance
   (corner readout: fps, emulation ms per frame average/max, slow frames, disc reads, and on Switch whether the disc
   is cached in RAM yet), and on PC Pixels (sharp/smooth), Fullscreen, Window size
 - Quit

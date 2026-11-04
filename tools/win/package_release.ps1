@@ -61,7 +61,7 @@ Install
 4. Hold R while opening any game to get the homebrew menu with full memory, then start rondo-nx.
 
 Controls: Y attack, B jump, X subweapon, + Run (start/pause), - Select. ZL + ZR together (or clicking the right
-stick) opens the menu: reset, 5 save-state slots, controller remapping, language, volume, aspect ratio, cheats.
+stick) opens the menu: reset, 5 save-state slots, controller remapping, language, volume, aspect ratio (4:3, stretch, or experimental widescreen), cheats.
 
 Saves are in switch/rondo-nx/saves/ (a backup copy is made once a day).
 
