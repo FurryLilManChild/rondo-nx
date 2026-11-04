@@ -2,6 +2,7 @@
 #include "geargrafx.h"
 #include "huc6260.h"
 #include "huc6270.h"
+#include "memory_inline.h"
 #include <string.h>
 
 namespace RondoWide
@@ -10,8 +11,33 @@ int s_row_offset = 0;
 
 static inline uint32_t to_u32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 
+// Camera (an object in the game's tables, work RAM bank F8):
+//   1E08 / 1E10  camera x, low / high byte (this frame's value; the screen shows it next frame)
+//   1E41 / 1E4A  camera x as scrolled on screen this frame
+//   1E96         camera screen number (x / 256, low 4 bits)
+//   1EBE         left limit: screen number (the camera stops at pixel 0 of it)
+//   1EC6 / 1EC7  right limit: screen number / pixel for the camera's left edge
+// Found from the game's camera code (bank 6A, around $6879 and $6971).
+void RoomExtent(GeargrafxCore* core, int* left, int* right)
+{
+    const u8* w = core->GetMemory()->GetMemoryMap()[0xF8];
+    int cs = w[0x1E96] & 15, clo = w[0x1E08];
+    int dl = ((cs - w[0x1EBE]) & 15) * 256 + clo;
+    int dr = ((w[0x1EC6] - cs) & 15) * 256 + w[0x1EC7] - clo;
+    // The picture shows the previous camera position: adjust by how far it has moved since.
+    int cur = w[0x1E08] | (w[0x1E10] << 8);
+    int shown = w[0x1E41] | (w[0x1E4A] << 8);
+    int moved = cur - shown;
+    if (moved > 64 || moved < -64) moved = 0;     // a jump (new room): don't trust it
+    dl -= moved;
+    dr += moved;
+    *left = dl < 0 ? 0 : dl;
+    *right = dr < 0 ? 0 : dr;
+}
+
 void Capture(GeargrafxCore* core, Snapshot* s, bool side_ok)
 {
+    RoomExtent(core, &s->room_left, &s->room_right);
     HuC6270* vdc = core->GetHuC6270_1();
     HuC6260* vce = core->GetHuC6260();
     u32 frame;
@@ -86,7 +112,8 @@ bool BgPixel(GeargrafxCore* core, int x, int y, uint32_t* rgba)
 // The game rewrites palette colours partway down the screen (sky gradients and the like), so the
 // end-of-frame colour table is wrong for many lines. Each row learns its real colours from the
 // visible middle of the same row: for every colour index seen there, the most common picture colour.
-static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t* frame, int w, int h, uint8_t* out, bool side_ok, int hud_rows)
+static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t* frame, int w, int h, uint8_t* out, bool side_ok, int hud_rows,
+                    int room_left, int room_right)
 {
     const int ow = w + 2 * kExtra;
     if (m.mapw * 8 <= w) side_ok = false;     // the map is no wider than the screen: nothing to show
@@ -116,10 +143,22 @@ static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t
         }
         for (int i = 0; i < kExtra; i++)
         {
-            int a = m.Index(li, i - kExtra);
-            dst[i] = seen[a] == stamp ? cand[a] : to_u32(pal888 + (ct[a] & 0x1FF) * 4);
-            int b = m.Index(li, w + i);
-            dst[kExtra + w + i] = seen[b] == stamp ? cand[b] : to_u32(pal888 + (ct[b] & 0x1FF) * 4);
+            // left side: screen x = i - kExtra, that is kExtra - i pixels past the left edge
+            if (kExtra - i <= room_left)
+            {
+                int a = m.Index(li, i - kExtra);
+                dst[i] = seen[a] == stamp ? cand[a] : to_u32(pal888 + (ct[a] & 0x1FF) * 4);
+            }
+            else
+                dst[i] = 0xFF000000u;
+            // right side: screen x = w + i, that is i + 1 pixels past the right edge
+            if (i < room_right)
+            {
+                int b = m.Index(li, w + i);
+                dst[kExtra + w + i] = seen[b] == stamp ? cand[b] : to_u32(pal888 + (ct[b] & 0x1FF) * 4);
+            }
+            else
+                dst[kExtra + w + i] = 0xFF000000u;
         }
     }
 }
@@ -132,13 +171,15 @@ void Compose(GeargrafxCore* core, const uint8_t* frame, int w, int h, uint8_t* o
     HuC6260* vce = core->GetHuC6260();
     static Map m;
     m.Load(core);
-    compose(m, vce->GetPalette888(), vce->GetColorTable(), frame, w, h, out, side_ok, hud_rows);
+    int rl = kExtra, rr = kExtra;
+    if (side_ok) RoomExtent(core, &rl, &rr);
+    compose(m, vce->GetPalette888(), vce->GetColorTable(), frame, w, h, out, side_ok, hud_rows, rl, rr);
 }
 
 void Compose(const Snapshot& snap, const uint8_t* frame, int w, int h, uint8_t* out, int hud_rows)
 {
     static Map m;
     m.Load(snap);
-    compose(m, snap.pal888, snap.colors, frame, w, h, out, snap.side_ok, hud_rows);
+    compose(m, snap.pal888, snap.colors, frame, w, h, out, snap.side_ok, hud_rows, snap.room_left, snap.room_right);
 }
 }

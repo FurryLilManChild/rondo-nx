@@ -291,6 +291,12 @@ INLINE void Memory::Write(u16 address, u8 value, bool block_transfer)
     u8 mpr_index = address >> 13;
     u8 bank = m_mpr[mpr_index];
     u16 offset = address & 0x1FFF;
+#if defined(RONDO_WATCH)
+    {   // debug builds only: report writes to watched work RAM bytes
+        extern void rondo_watch_write(u8 bank, u16 offset, u8 value);
+        if (bank == 0xF8) rondo_watch_write(bank, offset, value);
+    }
+#endif
 
 #if !defined(GG_DISABLE_DISASSEMBLER)
     if (m_huc6280->HasMemoryHooks(false))

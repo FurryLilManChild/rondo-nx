@@ -33,7 +33,12 @@ namespace RondoWide
         int mapw = 0, maph = 0;
         const uint8_t* pal888 = 0;     // the emulator's static RGBA table for 9-bit colours
         bool side_ok = false;
+        int room_left = 0, room_right = 0;  // pixels of the room visible past each screen edge
     };
+
+    // How far the current room extends past the left and right screen edges, in pixels, from
+    // the game's camera limits (work RAM F8). Outside these the side areas stay black.
+    void RoomExtent(GeargrafxCore* core, int* left, int* right);
     void Capture(GeargrafxCore* core, Snapshot* snap, bool side_ok);
     void Compose(const Snapshot& snap, const uint8_t* frame, int w, int h, uint8_t* out, int hud_rows);
 
