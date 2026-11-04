@@ -28,6 +28,7 @@ enum MenuResult
     MR_VIDEO,           // fullscreen/scale/smooth/aspect changed
     MR_VOLUME,
     MR_BINDINGS,        // a binding changed
+    MR_SUBWEAPON,       // give settings.subweapon now
     MR_QUIT
 };
 
@@ -41,6 +42,9 @@ struct MenuSettings
     int scale = 4;           // window size multiplier (PC)
     int language = 0;        // 0 = English, 1 = Japanese
     bool perf = false;       // performance readout in the corner
+    bool cheat_hp = false;       // infinite health
+    bool cheat_hearts = false;   // infinite hearts
+    int subweapon = 0;           // index into the Cheats page subweapon list
     int kb[BIND_COUNT];      // keyboard code per action (-1 = none)
     int pad[BIND_COUNT];     // gamepad button code per action (-1 = none)
     MenuSettings() { for (int i = 0; i < BIND_COUNT; i++) { kb[i] = -1; pad[i] = -1; } }
@@ -90,7 +94,7 @@ public:
     void Draw(uint8_t* rgba);
 
 private:
-    enum Page { PAGE_MAIN, PAGE_CONTROLS, PAGE_OPTIONS };
+    enum Page { PAGE_MAIN, PAGE_CONTROLS, PAGE_OPTIONS, PAGE_CHEATS };
     int ItemCount() const;
     MenuResult Activate(int dir);
     void Text(uint8_t* p, int x, int y, const std::string& s, uint32_t rgba);
@@ -113,6 +117,16 @@ private:
 };
 
 const char* BindActionName(int a);
+
+// Cheats (Richter): game RAM is bank F8 (work RAM). The player status block is only
+// filled during gameplay; outside it everything there is zero.
+//   F8:0093 subweapon  F8:0094 hearts (BCD)  F8:0098 health  F8:0099 max health
+enum { SUBWEAPON_COUNT = 7 };
+const char* SubweaponName(int i);     // display name for Cheats page index i
+uint8_t SubweaponId(int i);           // game's value for F8:0093
+// Applies cheats to work RAM once per frame. give_subweapon: index to hand over now
+// (-1 for none); returns true when it was applied (only during gameplay).
+bool ApplyCheats(uint8_t* wram, const MenuSettings& s, int give_subweapon);
 
 // Copies a game save file to <its folder>/backups/<name>-YYYYMMDD.sav, once a day,
 // skipping an empty (all zero) file, so a bad write can always be rolled back.

@@ -322,6 +322,7 @@ int main(int argc, char** argv)
         if (!ms.fullscreen) SDL_SetWindowSize(win, 320 * ms.scale, 240 * ms.scale);
     };
 
+    int give_sub = -1;   // subweapon waiting to be handed over (applied during gameplay)
     auto handle = [&](MenuResult r)
     {
         switch (r)
@@ -370,6 +371,7 @@ int main(int argc, char** argv)
             break;
         }
         case MR_VIDEO: apply_video(); break;
+        case MR_SUBWEAPON: give_sub = ms.subweapon; break;
         case MR_VOLUME: if (audio) SDL_SetAudioStreamGain(audio, ms.volume / 10.0f); break;
         case MR_QUIT: running = false; break;
         default: break;
@@ -521,6 +523,11 @@ int main(int argc, char** argv)
                 perf_sum += ms_f;
                 if (ms_f > perf_max) perf_max = ms_f;
                 perf_n++;
+                if (ApplyCheats(g_core->GetMemory()->GetMemoryMap()[0xF8], ms, give_sub))
+                {
+                    menu.Toast(std::string("Subweapon: ") + SubweaponName(give_sub));
+                    give_sub = -1;
+                }
                 if (audio && !fast && count > 0)
                     SDL_PutAudioStreamData(audio, snd.data(), count * (int)sizeof(s16));
                 frames++;

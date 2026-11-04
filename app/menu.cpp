@@ -22,9 +22,10 @@ const char* BindActionName(int a) { return (a >= 0 && a < BIND_COUNT) ? k_bind_n
 std::string MenuSettings::Serialize() const
 {
     std::string s;
-    char line[128];
-    snprintf(line, sizeof(line), "slot=%d\nvolume=%d\naspect=%d\nsmooth=%d\nfullscreen=%d\nscale=%d\nlanguage=%s\nperf=%d\n",
-        slot, volume, aspect, smooth ? 1 : 0, fullscreen ? 1 : 0, scale, language ? "japanese" : "english", perf ? 1 : 0);
+    char line[256];
+    snprintf(line, sizeof(line), "slot=%d\nvolume=%d\naspect=%d\nsmooth=%d\nfullscreen=%d\nscale=%d\nlanguage=%s\nperf=%d\ncheat_hp=%d\ncheat_hearts=%d\nsubweapon=%d\n",
+        slot, volume, aspect, smooth ? 1 : 0, fullscreen ? 1 : 0, scale, language ? "japanese" : "english", perf ? 1 : 0,
+        cheat_hp ? 1 : 0, cheat_hearts ? 1 : 0, subweapon);
     s += line;
     s += "bindings=2\n";
     for (int i = 0; i < BIND_COUNT; i++)
@@ -60,6 +61,9 @@ void MenuSettings::Parse(const std::string& text)
         else if (k == "fullscreen") fullscreen = (n != 0);
         else if (k == "scale") scale = (n >= 1 && n <= 8) ? n : 4;
         else if (k == "perf") perf = (n != 0);
+        else if (k == "cheat_hp") cheat_hp = (n != 0);
+        else if (k == "cheat_hearts") cheat_hearts = (n != 0);
+        else if (k == "subweapon") subweapon = (n >= 0 && n < SUBWEAPON_COUNT) ? n : 0;
         else if (k == "language") language = (v == "japanese" || v == "jp") ? 1 : 0;
         else
         {
@@ -75,7 +79,8 @@ void MenuSettings::Parse(const std::string& text)
 
 // ------------------------------------------------------------------ menu logic
 
-enum MainItem { MI_RESUME, MI_RESET, MI_SAVE, MI_LOAD, MI_CONTROLS, MI_OPTIONS, MI_QUIT, MI_COUNT };
+enum MainItem { MI_RESUME, MI_RESET, MI_SAVE, MI_LOAD, MI_CONTROLS, MI_OPTIONS, MI_CHEATS, MI_QUIT, MI_COUNT };
+enum CheatItem { CI_HP, CI_HEARTS, CI_SUBWEAPON, CI_BACK, CI_COUNT };
 enum OptItem { OI_LANGUAGE, OI_VOLUME, OI_ASPECT, OI_PIXELS, OI_FULLSCREEN, OI_SCALE, OI_PERF, OI_BACK };
 
 static std::vector<int> options_items(MenuHost* h)
@@ -113,6 +118,7 @@ int Menu::ItemCount() const
     case PAGE_MAIN: return MI_COUNT;
     case PAGE_CONTROLS: return BIND_COUNT + 2;
     case PAGE_OPTIONS: return (int)options_items(m_host).size();
+    case PAGE_CHEATS: return CI_COUNT;
     }
     return 1;
 }
@@ -144,7 +150,7 @@ MenuResult Menu::Nav(MenuNav n)
     case NAV_OK: return Activate(0);
     case NAV_BACK:
         if (m_page == PAGE_MAIN) return Close();
-        m_sel = (m_page == PAGE_CONTROLS) ? MI_CONTROLS : MI_OPTIONS;
+        m_sel = (m_page == PAGE_CONTROLS) ? MI_CONTROLS : (m_page == PAGE_CHEATS ? MI_CHEATS : MI_OPTIONS);
         m_page = PAGE_MAIN;
         return MR_NONE;
     }
@@ -177,7 +183,27 @@ MenuResult Menu::Activate(int dir)
             if (dir != 0) return MR_NONE;
             m_page = PAGE_OPTIONS; m_sel = 0;
             return MR_NONE;
+        case MI_CHEATS:
+            if (dir != 0) return MR_NONE;
+            m_page = PAGE_CHEATS; m_sel = 0;
+            return MR_NONE;
         case MI_QUIT: return dir == 0 ? MR_QUIT : MR_NONE;
+        }
+        return MR_NONE;
+    }
+
+    if (m_page == PAGE_CHEATS)
+    {
+        switch (m_sel)
+        {
+        case CI_HP: m_s->cheat_hp = !m_s->cheat_hp; return MR_BINDINGS;
+        case CI_HEARTS: m_s->cheat_hearts = !m_s->cheat_hearts; return MR_BINDINGS;
+        case CI_SUBWEAPON:
+            if (dir != 0) { m_s->subweapon = (m_s->subweapon + dir + SUBWEAPON_COUNT) % SUBWEAPON_COUNT; return MR_BINDINGS; }
+            return MR_SUBWEAPON;
+        case CI_BACK:
+            if (dir == 0) { m_page = PAGE_MAIN; m_sel = MI_CHEATS; }
+            return MR_NONE;
         }
         return MR_NONE;
     }
@@ -348,7 +374,7 @@ void Menu::Draw(uint8_t* p)
     if (m_page == PAGE_MAIN)
     {
         Text(p, 28 + 9 * 8, 20, "PAUSED", C_GOLD);
-        const char* labels[MI_COUNT] = {"Resume", "Reset", "Save state", "Load state", "Controls", "Options", "Quit"};
+        const char* labels[MI_COUNT] = {"Resume", "Reset", "Save state", "Load state", "Controls", "Options", "Cheats", "Quit"};
         for (int i = 0; i < MI_COUNT; i++)
         {
             bool sel = (i == m_sel);
@@ -365,6 +391,32 @@ void Menu::Draw(uint8_t* p)
         }
         Text(p, 28, H - 36, "Left/Right: change save slot", C_DIM);
         Text(p, 28, H - 26, "OK: select  Back: resume", C_DIM);
+        return;
+    }
+
+    if (m_page == PAGE_CHEATS)
+    {
+        Text(p, 28 + 9 * 8, 20, "CHEATS", C_GOLD);
+        for (int i = 0; i < CI_COUNT; i++)
+        {
+            int y = y0 + i * dy;
+            bool sel = (i == m_sel);
+            uint32_t c = sel ? C_SEL : C_WHITE;
+            if (sel) Text(p, x0 - 12, y, ">", C_SEL);
+            std::string label, value;
+            switch (i)
+            {
+            case CI_HP: label = "Infinite health"; value = m_s->cheat_hp ? "< On >" : "< Off >"; break;
+            case CI_HEARTS: label = "Infinite hearts"; value = m_s->cheat_hearts ? "< On >" : "< Off >"; break;
+            case CI_SUBWEAPON: label = "Subweapon"; value = std::string("< ") + SubweaponName(m_s->subweapon) + " >"; break;
+            case CI_BACK: label = "Back"; break;
+            }
+            Text(p, x0, y, label, c);
+            if (!value.empty()) Text(p, x0 + 136, y, value, c);
+        }
+        Text(p, 28, H - 46, "Subweapon: OK gives it now.", C_GRAY);
+        Text(p, 28, H - 36, "Pits still kill. Made for Richter.", C_GRAY);
+        Text(p, 28, H - 26, "Left/Right: change  Back: return", C_DIM);
         return;
     }
 
@@ -489,4 +541,23 @@ void BackupSaveFile(const std::string& path)
     if (!o) return;
     fwrite(data.data(), 1, data.size(), o);
     fclose(o);
+}
+
+// ------------------------------------------------------------------ cheats
+
+static const char* k_sub_names[SUBWEAPON_COUNT] = {"Dagger", "Axe", "Holy Water", "Cross", "Bible", "Stopwatch", "Key"};
+static const uint8_t k_sub_ids[SUBWEAPON_COUNT] = {0x05, 0x02, 0x04, 0x03, 0x08, 0x06, 0x07};
+
+const char* SubweaponName(int i) { return (i >= 0 && i < SUBWEAPON_COUNT) ? k_sub_names[i] : "?"; }
+uint8_t SubweaponId(int i) { return (i >= 0 && i < SUBWEAPON_COUNT) ? k_sub_ids[i] : 0; }
+
+bool ApplyCheats(uint8_t* wram, const MenuSettings& s, int give_subweapon)
+{
+    if (!wram) return false;
+    uint8_t max_hp = wram[0x99];
+    if (max_hp == 0) return false;           // not in gameplay
+    if (s.cheat_hp && wram[0x98] != 0 && wram[0x98] < max_hp) wram[0x98] = max_hp;
+    if (s.cheat_hearts && wram[0x94] != 0x99) wram[0x94] = 0x99;
+    if (give_subweapon >= 0) { wram[0x93] = SubweaponId(give_subweapon); return true; }
+    return false;
 }

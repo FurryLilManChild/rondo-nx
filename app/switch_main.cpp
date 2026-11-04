@@ -327,6 +327,85 @@ static void cache_stop()
     s_cache_running = false;
 }
 
+
+// ---------------------------------------------------------------- save states
+//
+// A state is copied to memory in one go (well under a frame), then written to
+// the SD card by a background thread in a single large write, so the game never
+// stalls on storage. Loading reads the whole file with one read.
+
+static Thread s_state_thread;
+static bool s_state_busy = false;           // a write thread exists (maybe finished)
+static volatile bool s_state_done = false;
+static volatile bool s_state_ok = false;
+static int s_state_slot = 0;
+static std::vector<u8> s_state_buf;
+static size_t s_state_size = 0;
+static std::string s_state_target;
+
+static bool write_file_whole(const std::string& path, const u8* data, size_t size)
+{
+    std::string tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1, size, f) == size;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok) { remove(tmp.c_str()); return false; }
+    remove(path.c_str());
+    return rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+static void state_write_thread(void*)
+{
+    s_state_ok = write_file_whole(s_state_target, s_state_buf.data(), s_state_size);
+    s_state_done = true;
+}
+
+// Waits for a pending state write (if any) to finish.
+static void state_wait()
+{
+    if (!s_state_busy) return;
+    threadWaitForExit(&s_state_thread);
+    threadClose(&s_state_thread);
+    s_state_busy = false;
+}
+
+static bool state_save_async(GeargrafxCore* core, const std::string& path, int slot)
+{
+    state_wait();
+    s_state_buf.resize(4 * 1024 * 1024);
+    size_t size = s_state_buf.size();
+    if (!core->SaveState(s_state_buf.data(), size, false)) return false;
+    s_state_size = size;
+    s_state_target = path;
+    s_state_slot = slot;
+    s_state_done = false;
+    if (R_FAILED(threadCreate(&s_state_thread, state_write_thread, NULL, NULL, 0x10000, 0x2C, 2)))
+    {
+        s_state_ok = write_file_whole(path, s_state_buf.data(), size);
+        s_state_done = true;
+        return true;
+    }
+    threadStart(&s_state_thread);
+    s_state_busy = true;
+    return true;
+}
+
+static bool state_load(GeargrafxCore* core, const std::string& path)
+{
+    state_wait();
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n <= 0) { fclose(f); return false; }
+    std::vector<u8> buf((size_t)n);
+    bool ok = fread(buf.data(), 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    return ok && core->LoadState(buf.data(), (size_t)n);
+}
+
 // ---------------------------------------------------------------- menu host (Switch)
 
 static std::string s_saves;
@@ -505,6 +584,7 @@ int main(int argc, char** argv)
         sent = want;
     };
     auto save_settings = [&]() { write_text(settings_path, ms.Serialize()); };
+    int give_sub = -1;   // subweapon waiting to be handed over (applied during gameplay)
 
     auto handle = [&](MenuResult r)
     {
@@ -514,15 +594,19 @@ int main(int argc, char** argv)
         case MR_SAVE_STATE:
         {
             char t[40];
-            bool ok = core->SaveState(state_path(ms.slot).c_str());
-            snprintf(t, sizeof(t), ok ? "Saved to slot %d" : "Couldn't save slot %d", ms.slot);
-            menu.Toast(t);
+            if (!state_save_async(core, state_path(ms.slot), ms.slot))
+            {
+                snprintf(t, sizeof(t), "Couldn't save slot %d", ms.slot);
+                menu.Toast(t);
+            }
+            else
+                menu.Toast("Saving...");
             break;
         }
         case MR_LOAD_STATE:
         {
             char t[40];
-            bool ok = core->LoadState(state_path(ms.slot).c_str());
+            bool ok = state_load(core, state_path(ms.slot));
             snprintf(t, sizeof(t), ok ? "Loaded slot %d" : "Couldn't load slot %d", ms.slot);
             menu.Toast(t);
             break;
@@ -549,6 +633,7 @@ int main(int argc, char** argv)
             cache_start(core);
             break;
         case MR_VOLUME: s_volume = ms.volume; break;
+        case MR_SUBWEAPON: give_sub = ms.subweapon; break;
         case MR_QUIT: running = false; break;
         default: break;
         }
@@ -613,8 +698,22 @@ int main(int argc, char** argv)
             if (dt > 16600000ULL) perf_slow++;
             perf_frames++;
             audio_push(snd.data(), count);
+            if (ApplyCheats(core->GetMemory()->GetMemoryMap()[0xF8], ms, give_sub))
+            {
+                menu.Toast(std::string("Subweapon: ") + SubweaponName(give_sub));
+                give_sub = -1;
+            }
         }
         menu.Tick();
+
+        // Report a finished background state write.
+        if (s_state_done)
+        {
+            s_state_done = false;
+            char t[40];
+            snprintf(t, sizeof(t), s_state_ok ? "Saved to slot %d" : "Couldn't save slot %d", s_state_slot);
+            menu.Toast(t);
+        }
 
         // Performance readout, refreshed once a second.
         u64 now = armGetSystemTick();
@@ -652,6 +751,7 @@ int main(int argc, char** argv)
 
     core->SaveRam(bram.c_str(), true);
     save_settings();
+    state_wait();
     cache_stop();
     if (render_ok)
     {
