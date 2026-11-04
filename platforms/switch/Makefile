@@ -15,7 +15,7 @@ BUILD   := build
 
 APP_TITLE   := rondo-nx
 APP_AUTHOR  := FurryLilManChild
-APP_VERSION := 1.1
+APP_VERSION := 1.2-test1
 
 CORE := geargrafx_core adpcm audio arcade_card_mapper cdrom_audio cdrom_chd_file_adapter cdrom_chd_image \
         cdrom_cuebin_image cdrom_mmi_image media_file media_file_native media_file_slice mmi_archive \
@@ -24,7 +24,7 @@ CORE := geargrafx_core adpcm audio arcade_card_mapper cdrom_audio cdrom_chd_file
         scsi_controller sf2_mapper trace_logger profiler turbolink vgm_recorder
 
 CXX_SRC := $(addprefix $(GG)/src/,$(addsuffix .cpp,$(CORE))) $(GG)/dependencies/qon/qon.cpp \
-           $(ROOT)/runtime/rondo_xlat.cpp $(ROOT)/app/switch_main.cpp $(ROOT)/app/menu.cpp
+           $(ROOT)/runtime/rondo_xlat.cpp $(ROOT)/runtime/rondo_wide.cpp $(ROOT)/app/switch_main.cpp $(ROOT)/app/menu.cpp
 C_SRC   := $(GG)/dependencies/libchdr/src/libchdr_bitstream.c $(GG)/dependencies/libchdr/src/libchdr_cdrom.c \
            $(GG)/dependencies/libchdr/src/libchdr_chd.c $(GG)/dependencies/libchdr/src/libchdr_flac.c \
            $(GG)/dependencies/libchdr/src/libchdr_huffman.c $(GG)/dependencies/lzma/src/LzFind.c \

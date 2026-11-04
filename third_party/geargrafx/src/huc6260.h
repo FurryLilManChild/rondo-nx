@@ -88,6 +88,7 @@ public:
     int GetClockDivider();
     int GetTotalLines();
     u16* GetColorTable();
+    const u8* GetPalette888() { return &m_rgba888_palette[m_palette][0][0]; }   // rondo-nx: RGBA per 9-bit colour
     void SetBuffer(u8* frame_buffer);
     u8* GetBuffer();
     int GetCurrentWidth();

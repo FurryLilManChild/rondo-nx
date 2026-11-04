@@ -12,6 +12,7 @@
 #include <vector>
 #include "geargrafx.h"
 #include "rondo_xlat_rt.h"
+#include "rondo_wide.h"
 #include "menu.h"
 
 bool g_mcp_stdio_mode = false;
@@ -322,6 +323,7 @@ int main(int argc, char** argv)
         if (!ms.fullscreen) SDL_SetWindowSize(win, 320 * ms.scale, 240 * ms.scale);
     };
 
+    std::vector<u8> wide;
     int give_sub = -1;   // subweapon waiting to be handed over (applied during gameplay)
     auto handle = [&](MenuResult r)
     {
@@ -537,14 +539,25 @@ int main(int argc, char** argv)
 
         GG_Runtime_Info ri;
         g_core->GetRuntimeInfo(ri);
-        if (!tex || ri.screen_width != tex_w || ri.screen_height != tex_h)
+        // Widescreen: extra scenery drawn at both sides during gameplay, black bars elsewhere.
+        const bool widescreen = ms.aspect == 2;
+        const int pic_w = widescreen ? ri.screen_width + 2 * RondoWide::kExtra : ri.screen_width;
+        const u8* pic = fb.data();
+        if (widescreen)
+        {
+            wide.resize((size_t)pic_w * ri.screen_height * 4);
+            RondoWide::Compose(g_core, fb.data(), ri.screen_width, ri.screen_height, wide.data(),
+                g_core->GetMemory()->GetMemoryMap()[0xF8][0x99] != 0, 0);
+            pic = wide.data();
+        }
+        if (!tex || pic_w != tex_w || ri.screen_height != tex_h)
         {
             if (tex) SDL_DestroyTexture(tex);
-            tex_w = ri.screen_width; tex_h = ri.screen_height;
+            tex_w = pic_w; tex_h = ri.screen_height;
             tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
         }
         SDL_SetTextureScaleMode(tex, ms.smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
-        SDL_UpdateTexture(tex, NULL, fb.data(), tex_w * 4);
+        SDL_UpdateTexture(tex, NULL, pic, tex_w * 4);
         int ww, wh;
         SDL_GetRenderOutputSize(ren, &ww, &wh);
         SDL_FRect dst;
@@ -553,6 +566,7 @@ int main(int argc, char** argv)
         else
         {
             float aspect = ri.aspect_ratio > 0 ? ri.aspect_ratio : 4.0f / 3.0f;
+            aspect = aspect * pic_w / ri.screen_width;
             float dh = (float)wh, dw = dh * aspect;
             if (dw > ww) { dw = (float)ww; dh = dw / aspect; }
             dst = {(ww - dw) * 0.5f, (wh - dh) * 0.5f, dw, dh};
@@ -564,7 +578,9 @@ int main(int argc, char** argv)
         {
             menu.Draw(overlay_px.data());
             SDL_UpdateTexture(overlay, NULL, overlay_px.data(), Menu::W * 4);
-            SDL_RenderTexture(ren, overlay, NULL, &dst);
+            SDL_FRect odst = dst;
+            if (widescreen) { odst.w = dst.w * ri.screen_width / pic_w; odst.x = dst.x + (dst.w - odst.w) * 0.5f; }
+            SDL_RenderTexture(ren, overlay, NULL, &odst);
         }
         SDL_RenderPresent(ren);
 

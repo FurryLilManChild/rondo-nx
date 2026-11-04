@@ -56,7 +56,7 @@ void MenuSettings::Parse(const std::string& text)
         int n = atoi(v.c_str());
         if (k == "slot") slot = (n >= 1 && n <= 5) ? n : 1;
         else if (k == "volume") volume = (n >= 0 && n <= 10) ? n : 10;
-        else if (k == "aspect") aspect = n ? 1 : 0;
+        else if (k == "aspect") aspect = (n >= 0 && n <= 2) ? n : 0;
         else if (k == "smooth") smooth = (n != 0);
         else if (k == "fullscreen") fullscreen = (n != 0);
         else if (k == "scale") scale = (n >= 1 && n <= 8) ? n : 4;
@@ -259,7 +259,7 @@ MenuResult Menu::Activate(int dir)
         if (m_s->volume < 0) m_s->volume = 0;
         if (m_s->volume > 10) m_s->volume = 10;
         return MR_VOLUME;
-    case OI_ASPECT: m_s->aspect = m_s->aspect ? 0 : 1; return MR_VIDEO;
+    case OI_ASPECT: m_s->aspect = (m_s->aspect + (dir < 0 ? 2 : 1)) % 3; return MR_VIDEO;
     case OI_PIXELS: m_s->smooth = !m_s->smooth; return MR_VIDEO;
     case OI_FULLSCREEN: m_s->fullscreen = !m_s->fullscreen; return MR_VIDEO;
     case OI_PERF: m_s->perf = !m_s->perf; return MR_VIDEO;
@@ -485,7 +485,7 @@ void Menu::Draw(uint8_t* p)
             break;
         }
         case OI_VOLUME: label = "Volume"; snprintf(buf, sizeof(buf), "< %d%% >", m_s->volume * 10); value = buf; break;
-        case OI_ASPECT: label = "Aspect"; value = m_s->aspect ? "< Stretch >" : "< 4:3 >"; break;
+        case OI_ASPECT: label = "Aspect"; value = m_s->aspect == 2 ? "< Widescreen >" : (m_s->aspect ? "< Stretch >" : "< 4:3 >"); break;
         case OI_PIXELS: label = "Pixels"; value = m_s->smooth ? "< Smooth >" : "< Sharp >"; break;
         case OI_FULLSCREEN: label = "Fullscreen"; value = m_s->fullscreen ? "< On >" : "< Off >"; break;
         case OI_SCALE: label = "Window size"; snprintf(buf, sizeof(buf), "< %dx >", m_s->scale); value = buf; break;

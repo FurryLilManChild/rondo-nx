@@ -23,6 +23,7 @@
 #include "cdrom_media.h"
 #include "cdrom_cuebin_image.h"
 #include "rondo_xlat_rt.h"
+#include "rondo_wide.h"
 #include "menu.h"
 #include <time.h>
 
@@ -228,8 +229,11 @@ struct PresentQueue
     std::vector<u32> pic;
     int w = 0, h = 0;
     Rect r = {0, 0, 1280, 720};
+    Rect r_ov = {0, 0, 1280, 720};      // where the menu overlay goes (the 4:3 middle in widescreen)
     bool overlay_on = false;
     std::vector<uint8_t> overlay;
+    bool wide = false;                  // build the widescreen picture from snap on the render thread
+    RondoWide::Snapshot* snap = NULL;
 };
 static PresentQueue s_pq;
 static Framebuffer s_fb;
@@ -238,6 +242,8 @@ static void render_thread(void*)
 {
     std::vector<u32> pic;
     std::vector<uint8_t> ov(Menu::W * Menu::H * 4);
+    std::vector<u32> widepic;
+    RondoWide::Snapshot* snap = new RondoWide::Snapshot();
     for (;;)
     {
         mutexLock(&s_pq.lock);
@@ -245,30 +251,48 @@ static void render_thread(void*)
         if (s_pq.quit) { mutexUnlock(&s_pq.lock); break; }
         pic.swap(s_pq.pic);
         int w = s_pq.w, h = s_pq.h;
-        Rect r = s_pq.r;
+        Rect r = s_pq.r, r_ov = s_pq.r_ov;
         bool ov_on = s_pq.overlay_on;
         if (ov_on) ov.swap(s_pq.overlay);
+        bool wide = s_pq.wide;
+        if (wide) { RondoWide::Snapshot* t = s_pq.snap; s_pq.snap = snap; snap = t; }
         s_pq.has = false;
         condvarWakeAll(&s_pq.cv);
         mutexUnlock(&s_pq.lock);
 
+        const u32* shown = pic.data();
+        int shown_w = w;
+        if (wide)
+        {
+            shown_w = w + 2 * RondoWide::kExtra;
+            widepic.resize((size_t)shown_w * h);
+            RondoWide::Compose(*snap, (const uint8_t*)pic.data(), w, h, (uint8_t*)widepic.data(), 0);
+            shown = widepic.data();
+        }
         u32 stride;
         u32* px = (u32*)framebufferBegin(&s_fb, &stride);
-        blit(px, stride / 4, pic.data(), w, h, r, 1280, 720);
-        if (ov_on) blend_overlay(px, stride / 4, ov.data(), r);
+        blit(px, stride / 4, shown, shown_w, h, r, 1280, 720);
+        if (ov_on) blend_overlay(px, stride / 4, ov.data(), r_ov);
         framebufferEnd(&s_fb);
     }
 }
 
 // Hands a finished frame to the render thread. Waits only if the previous one
 // hasn't been picked up yet (which is what paces emulation to the display).
-static void present(const u8* frame, int w, int h, Rect r, const uint8_t* overlay)
+static void present(const u8* frame, int w, int h, Rect r, Rect r_ov, const uint8_t* overlay,
+                    GeargrafxCore* wide_core = NULL, bool side_ok = false)
 {
     mutexLock(&s_pq.lock);
     while (s_pq.has && !s_pq.quit) condvarWait(&s_pq.cv, &s_pq.lock);
+    s_pq.wide = wide_core != NULL;
+    if (wide_core)
+    {
+        if (!s_pq.snap) s_pq.snap = new RondoWide::Snapshot();
+        RondoWide::Capture(wide_core, s_pq.snap, side_ok);
+    }
     s_pq.pic.resize((size_t)w * h);
     memcpy(s_pq.pic.data(), frame, (size_t)w * h * 4);
-    s_pq.w = w; s_pq.h = h; s_pq.r = r;
+    s_pq.w = w; s_pq.h = h; s_pq.r = r; s_pq.r_ov = r_ov;
     s_pq.overlay_on = overlay != NULL;
     if (overlay)
     {
@@ -565,6 +589,7 @@ int main(int argc, char** argv)
     std::vector<u8> frame(2048 * 512 * 4);
     std::vector<s16> snd(GG_AUDIO_BUFFER_SIZE * 4);
     std::vector<uint8_t> overlay(Menu::W * Menu::H * 4);
+    std::vector<u8> wide;
     u16 sent = 0;
     int boot = 0;
     u64 perf_t0 = armGetSystemTick(), perf_sum = 0, perf_max = 0;
@@ -731,17 +756,41 @@ int main(int argc, char** argv)
 
         GG_Runtime_Info ri;
         core->GetRuntimeInfo(ri);
-        Rect r = fit_rect(ri.aspect_ratio > 0 ? ri.aspect_ratio : 4.0f / 3.0f, ms.aspect == 1, 1280, 720);
+        float aspect = ri.aspect_ratio > 0 ? ri.aspect_ratio : 4.0f / 3.0f;
+        const u8* pic = frame.data();
+        int pic_w = ri.screen_width;
+        Rect r, r_ov;
+        const bool widescreen = ms.aspect == 2;
+        const bool side_ok = core->GetMemory()->GetMemoryMap()[0xF8][0x99] != 0;   // gameplay
+        if (widescreen)
+        {
+            // Widescreen: extra scenery drawn at both sides during gameplay, black bars elsewhere.
+            // The render thread builds the picture from a snapshot; without it, do it here.
+            pic_w = ri.screen_width + 2 * RondoWide::kExtra;
+            if (!render_ok)
+            {
+                wide.resize((size_t)pic_w * ri.screen_height * 4);
+                RondoWide::Compose(core, frame.data(), ri.screen_width, ri.screen_height, wide.data(), side_ok, 0);
+                pic = wide.data();
+            }
+            r = fit_rect(aspect * pic_w / ri.screen_width, false, 1280, 720);
+            r_ov = r;
+            r_ov.w = r.w * ri.screen_width / pic_w;
+            r_ov.x = r.x + (r.w - r_ov.w) / 2;
+        }
+        else
+            r_ov = r = fit_rect(aspect, ms.aspect == 1, 1280, 720);
         bool ov = menu.Visible();
         if (ov) menu.Draw(overlay.data());
         if (render_ok)
-            present(frame.data(), ri.screen_width, ri.screen_height, r, ov ? overlay.data() : NULL);
+            present(frame.data(), ri.screen_width, ri.screen_height, r, r_ov, ov ? overlay.data() : NULL,
+                    widescreen ? core : NULL, side_ok);
         else
         {
             u32 stride;
             u32* px = (u32*)framebufferBegin(&s_fb, &stride);
-            blit(px, stride / 4, (const u32*)frame.data(), ri.screen_width, ri.screen_height, r, 1280, 720);
-            if (ov) blend_overlay(px, stride / 4, overlay.data(), r);
+            blit(px, stride / 4, (const u32*)pic, pic_w, ri.screen_height, r, 1280, 720);
+            if (ov) blend_overlay(px, stride / 4, overlay.data(), r_ov);
             framebufferEnd(&s_fb);
         }
 

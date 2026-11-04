@@ -36,7 +36,7 @@ struct MenuSettings
 {
     int slot = 1;            // 1..5
     int volume = 10;         // 0..10
-    int aspect = 0;          // 0 = 4:3, 1 = stretch to fill
+    int aspect = 0;          // 0 = 4:3, 1 = stretch to fill, 2 = widescreen (extra scenery at the sides)
     bool smooth = false;
     bool fullscreen = false;
     int scale = 4;           // window size multiplier (PC)
