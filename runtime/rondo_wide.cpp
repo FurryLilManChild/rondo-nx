@@ -202,16 +202,19 @@ static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t
             continue;
         }
         if (++stamp == 0) { memset(seen, 0, sizeof(seen)); stamp = 1; }
+        static Map::LineSprite sp[128];
+        int nsp = m.Sprites(y + s_sprite_row_offset, sp);
         for (int x = 0; x < w; x++)
         {
             int idx = m.Index(li, x);
+            // Skip pixels a sprite covers: their colour is the sprite's, not the background's
+            // (a big sprite such as a tree would otherwise teach its colours to the background).
+            if (nsp && Map::SpriteAt(sp, nsp, x, idx) >= 256) continue;
             uint32_t px = src[x];
             if (seen[idx] != stamp) { seen[idx] = stamp; cand[idx] = px; votes[idx] = 1; }
             else if (cand[idx] == px) votes[idx]++;
             else if (--votes[idx] <= 0) { cand[idx] = px; votes[idx] = 1; }
         }
-        static Map::LineSprite sp[128];
-        int nsp = m.Sprites(y + s_sprite_row_offset, sp);
         for (int i = 0; i < kExtra; i++)
         {
             // left side: screen x = i - kExtra, that is kExtra - i pixels past the left edge
