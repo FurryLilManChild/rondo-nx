@@ -6,16 +6,17 @@ No game data is in this repository. The game's code is translated locally from c
 
 ## Status
 
-**Version 0.5.0 is a test release for the Switch.** It has been played on a V1 Switch (Atmosphère) and runs well,
-but it has not been played to the end on the Switch yet. Every stage, alternate stage and boss was traced, and the
-translated code matches the emulator frame by frame. Release notes: [docs/release/rondo-nx-0.5.0.md](docs/release/rondo-nx-0.5.0.md).
+**Version 1.1 is the current Switch release** (cheats menu, background save states). It has been played on a V1
+Switch (Atmosphère) and runs well, but it has not been played to the end on the Switch yet. Every stage, alternate
+stage and boss was traced, and the translated code matches the emulator frame by frame. Release notes:
+[docs/release/rondo-nx-1.1.md](docs/release/rondo-nx-1.1.md) (1.0: [docs/release/rondo-nx-0.5.0.md](docs/release/rondo-nx-0.5.0.md), published as 1.0).
 
 ## Download and install (Switch)
 
 You need a Switch with custom firmware (Atmosphère), your own System Card 3.0 BIOS, and your own disc with the
 English fan translation v1.03 applied (a `.cue` with its `.bin` tracks). Nothing from the game is included.
 
-1. Download `rondo-nx-v0.5.0-switch.zip` from this repository's **Releases** page and extract it to the root of your
+1. Download `rondo-nx-v1.1-switch.zip` from this repository's **Releases** page and extract it to the root of your
    SD card. It makes `switch/rondo-nx/`.
 2. Copy the System Card to `switch/rondo-nx/syscard3.pce`.
 3. Copy the English `.cue` and all of its `.bin` tracks into `switch/rondo-nx/game/`. Optional: the Japanese original

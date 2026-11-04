@@ -1,6 +1,6 @@
-# rondo-nx 0.5.1 (test release)
+# rondo-nx 1.1
 
-A small update to 0.5.0 for the native Nintendo Switch port of **Castlevania: Rondo of Blood** (PC Engine Super
+A small update to 1.0 for the native Nintendo Switch port of **Castlevania: Rondo of Blood** (PC Engine Super
 CD-ROM², 1993). **No game files and no System Card are included**; you need your own.
 
 ## New: Cheats
@@ -23,9 +23,9 @@ with Richter; Maria hasn't been tested with them yet.
 
 ## Install or update
 
-- **New install:** follow the steps in 0.5.0: extract `rondo-nx-v0.5.1-switch.zip` to the root of your SD card,
+- **New install:** follow the steps in 1.0: extract `rondo-nx-v1.1-switch.zip` to the root of your SD card,
   then add `syscard3.pce` and your disc.
-- **Updating from 0.5.0:** copy only `switch/rondo-nx/rondo-nx.nro` over the old one. Your System Card, disc, game
+- **Updating from 1.0:** copy only `switch/rondo-nx/rondo-nx.nro` over the old one. Your System Card, disc, game
   save, save states and settings stay as they are.
 
 ## Known issues

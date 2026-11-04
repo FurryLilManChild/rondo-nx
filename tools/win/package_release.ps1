@@ -49,7 +49,7 @@ Copy-Item $nro $app
 Copy-Item (Join-Path $repo 'LICENSE') (Join-Path $app 'LICENSE.txt')
 
 @"
-rondo-nx $version (test release): Castlevania: Rondo of Blood (PC Engine CD) for the Nintendo Switch
+rondo-nx $version: Castlevania: Rondo of Blood (PC Engine CD) for the Nintendo Switch
 https://github.com/FurryLilManChild/rondo-nx
 Unofficial and fan-made; no affiliation with Konami or Nintendo. No game files and no System Card are included.
 
