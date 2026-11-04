@@ -262,6 +262,12 @@ INLINE void HuC6270::ProcessVramWrite()
         m_huc6280->CheckMemoryBreakpoints(HuC6280::HuC6280_BREAKPOINT_TYPE_VRAM, m_register[HUC6270_REG_MAWR], false);
 #endif
         m_vram[m_register[HUC6270_REG_MAWR] & 0x7FFF] = m_register[HUC6270_REG_VWR];
+#if defined(RONDO_WATCH)
+        {   // debug builds only: report video memory writes
+            extern void rondo_watch_vram(u16 address, u16 value);
+            rondo_watch_vram(m_register[HUC6270_REG_MAWR] & 0x7FFF, m_register[HUC6270_REG_VWR]);
+        }
+#endif
     }
 
     m_register[HUC6270_REG_MAWR] += k_huc6270_read_write_increment[(m_register[HUC6270_REG_CR] >> 11) & 0x03];

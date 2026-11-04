@@ -24,6 +24,7 @@
 #include "cdrom_cuebin_image.h"
 #include "rondo_xlat_rt.h"
 #include "rondo_wide.h"
+#include "huc6270.h"
 #include "menu.h"
 #include <time.h>
 
@@ -714,6 +715,10 @@ int main(int argc, char** argv)
             if (boot < 200) { boot++; if (boot >= 90 && boot < 96) want |= GG_KEY_RUN; }
             send(want);
 
+            // Widescreen: the game keeps sprite pieces that reach into the side areas, and the
+            // chip's 16 sprites per line limit is lifted (those extra pieces would count against it).
+            RondoXlat::s_wide_sprites = (ms.aspect == 2);
+            core->GetHuC6270_1()->SetNoSpriteLimit(ms.aspect == 2);
             int count = 0;
             u64 t0 = armGetSystemTick();
             core->RunToVBlank(frame.data(), snd.data(), &count);

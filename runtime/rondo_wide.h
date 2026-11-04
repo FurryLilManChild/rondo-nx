@@ -19,6 +19,12 @@ namespace RondoWide
     // outside 0..255) on picture row y, or -1 when that line has no background this frame.
     int BgIndex(GeargrafxCore* core, int x, int y);
 
+    // Sprite colour index at screen x on picture row y (256..511), -2 when the background
+    // shows through (sprite behind an opaque background pixel), -1 when no sprite is there.
+    // Uses the live chip state. sprite_row_offset: picture row -> sprite raster line.
+    extern int s_sprite_row_offset;
+    int SpriteIndex(GeargrafxCore* core, int x, int y);
+
     // Same, as RGBA from the end-of-frame colour table.
     bool BgPixel(GeargrafxCore* core, int x, int y, uint32_t* rgba);
 
@@ -27,6 +33,8 @@ namespace RondoWide
     struct Snapshot
     {
         uint16_t vram[0x8000];
+        uint16_t sat[256];                  // sprite attribute table (64 sprites x 4 words)
+        int sprite_mode1 = 0;
         uint16_t colors[512];
         uint16_t line_x[263], line_y[263];
         uint8_t line_ok[263];

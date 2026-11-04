@@ -13,6 +13,7 @@
 #include "geargrafx.h"
 #include "rondo_xlat_rt.h"
 #include "rondo_wide.h"
+#include "huc6270.h"
 #include "menu.h"
 
 bool g_mcp_stdio_mode = false;
@@ -515,6 +516,10 @@ int main(int argc, char** argv)
             }
             sync_input(want);
 
+            // Widescreen: the game keeps sprite pieces that reach into the side areas, and the
+            // chip's 16 sprites per line limit is lifted (those extra pieces would count against it).
+            RondoXlat::s_wide_sprites = (ms.aspect == 2);
+            g_core->GetHuC6270_1()->SetNoSpriteLimit(ms.aspect == 2);
             int runs = fast ? 4 : 1;
             for (int r = 0; r < runs; r++)
             {

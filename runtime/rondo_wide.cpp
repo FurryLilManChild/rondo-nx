@@ -8,6 +8,7 @@
 namespace RondoWide
 {
 int s_row_offset = 0;
+int s_sprite_row_offset = -3;   // measured: sprite raster lines run 3 behind picture rows
 
 static inline uint32_t to_u32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 
@@ -48,6 +49,8 @@ void Capture(GeargrafxCore* core, Snapshot* s, bool side_ok)
     s->mapw = (mwr & 3) == 0 ? 32 : ((mwr & 3) == 1 ? 64 : 128);
     s->maph = (mwr & 4) ? 64 : 32;
     memcpy(s->vram, vdc->GetVRAM(), sizeof(s->vram));
+    memcpy(s->sat, vdc->GetSAT(), sizeof(s->sat));
+    s->sprite_mode1 = (((R[9] >> 2) & 3) == 1);
     memcpy(s->colors, vce->GetColorTable(), sizeof(s->colors));
     s->pal888 = vce->GetPalette888();
     s->side_ok = side_ok;
@@ -57,6 +60,8 @@ void Capture(GeargrafxCore* core, Snapshot* s, bool side_ok)
 struct Map
 {
     const u16* vram;
+    const u16* sat;
+    int mode1;
     const u16* lx; const u16* ly; const u8* lok;
     int mapw, maph;
     u16 lx_buf[263], ly_buf[263]; u8 lok_buf[263];
@@ -72,8 +77,61 @@ struct Map
         mapw = (mwr & 3) == 0 ? 32 : ((mwr & 3) == 1 ? 64 : 128);
         maph = (mwr & 4) ? 64 : 32;
         vram = vdc->GetVRAM();
+        sat = vdc->GetSAT();
+        mode1 = (((R[9] >> 2) & 3) == 1);
     }
-    void Load(const Snapshot& s) { vram = s.vram; lx = s.line_x; ly = s.line_y; lok = s.line_ok; mapw = s.mapw; maph = s.maph; }
+    void Load(const Snapshot& s) { vram = s.vram; sat = s.sat; mode1 = s.sprite_mode1; lx = s.line_x; ly = s.line_y; lok = s.line_ok; mapw = s.mapw; maph = s.maph; }
+
+    // Sprites on one raster line, in priority order (lowest SAT index first, as the chip does).
+    struct LineSprite { int x; u16 flags; u16 p[4]; };
+    int Sprites(int line, LineSprite* out) const
+    {
+        static const int heights[4] = {16, 32, 64, 64};
+        static const int wmask[2] = {0xFFFF, 0xFFFE};
+        static const int hmask[4] = {0xFFFF, 0xFFFD, 0xFFF9, 0xFFF9};
+        int n = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            const u16* e = sat + i * 4;
+            int sy = (e[0] & 0x3FF) - 64;
+            u16 flags = e[3];
+            int cgy = (flags >> 12) & 3, h = heights[cgy];
+            if (line < sy || line >= sy + h) continue;
+            int ry = line - sy;
+            if (flags & 0x8000) ry = h - 1 - ry;
+            int cgx = (flags >> 8) & 1;
+            int pattern = ((e[2] >> 1) & 0x3FF) & wmask[cgx] & hmask[cgy];
+            int m1 = mode1 ? (e[2] & 1) << 5 : 0;
+            int base = (pattern << 6) + (ry >> 4) * 128 + (ry & 15) + m1;
+            int x = (e[1] & 0x3FF) - 32;
+            if (x >= 512) x -= 1024;                // the chip's x wraps; treat as left of the screen
+            for (int half = 0; half <= cgx; half++)
+            {
+                int a = base + (cgx ? ((flags & 0x0800) ? (half ? 0 : 64) : (half ? 64 : 0)) : 0);
+                LineSprite& ls = out[n++];
+                ls.x = x + half * 16;
+                ls.flags = flags;
+                ls.p[0] = vram[a & 0x7FFF]; ls.p[1] = vram[(a + 16) & 0x7FFF];
+                ls.p[2] = mode1 ? 0 : vram[(a + 32) & 0x7FFF]; ls.p[3] = mode1 ? 0 : vram[(a + 48) & 0x7FFF];
+            }
+        }
+        return n;
+    }
+    // Colour index for screen x given the line's sprites and the background index there.
+    static inline int SpriteAt(const LineSprite* sp, int n, int sx, int bg)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            int dx = sx - sp[i].x;
+            if (dx < 0 || dx > 15) continue;
+            int b = (sp[i].flags & 0x0800) ? dx : 15 - dx;
+            int pix = ((sp[i].p[0] >> b) & 1) | (((sp[i].p[1] >> b) & 1) << 1) | (((sp[i].p[2] >> b) & 1) << 2) | (((sp[i].p[3] >> b) & 1) << 3);
+            if (!pix) continue;
+            if (!(sp[i].flags & 0x0080) && (bg & 0x0F)) return -2;   // behind an opaque background pixel
+            return 256 + (sp[i].flags & 0x0F) * 16 + pix;
+        }
+        return -1;
+    }
     // Colour index (palette * 16 + pixel, 0 = transparent) at screen x on line li.
     inline int Index(int li, int sx) const
     {
@@ -98,6 +156,17 @@ int BgIndex(GeargrafxCore* core, int x, int y)
     int li = y + s_row_offset;
     if (!m.LineOk(li)) return -1;
     return m.Index(li, x);
+}
+
+int SpriteIndex(GeargrafxCore* core, int x, int y)
+{
+    static Map m;
+    m.Load(core);
+    int li = y + s_row_offset;
+    int bg = m.LineOk(li) ? m.Index(li, x) : 0;
+    static Map::LineSprite sp[128];
+    int n = m.Sprites(y + s_sprite_row_offset, sp);
+    return Map::SpriteAt(sp, n, x, bg);
 }
 
 bool BgPixel(GeargrafxCore* core, int x, int y, uint32_t* rgba)
@@ -141,13 +210,17 @@ static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t
             else if (cand[idx] == px) votes[idx]++;
             else if (--votes[idx] <= 0) { cand[idx] = px; votes[idx] = 1; }
         }
+        static Map::LineSprite sp[128];
+        int nsp = m.Sprites(y + s_sprite_row_offset, sp);
         for (int i = 0; i < kExtra; i++)
         {
             // left side: screen x = i - kExtra, that is kExtra - i pixels past the left edge
             if (kExtra - i <= room_left)
             {
                 int a = m.Index(li, i - kExtra);
-                dst[i] = seen[a] == stamp ? cand[a] : to_u32(pal888 + (ct[a] & 0x1FF) * 4);
+                int spi = nsp ? Map::SpriteAt(sp, nsp, i - kExtra, a) : -1;
+                if (spi >= 256) dst[i] = to_u32(pal888 + (ct[spi] & 0x1FF) * 4);
+                else dst[i] = seen[a] == stamp ? cand[a] : to_u32(pal888 + (ct[a] & 0x1FF) * 4);
             }
             else
                 dst[i] = 0xFF000000u;
@@ -155,7 +228,9 @@ static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t
             if (i < room_right)
             {
                 int b = m.Index(li, w + i);
-                dst[kExtra + w + i] = seen[b] == stamp ? cand[b] : to_u32(pal888 + (ct[b] & 0x1FF) * 4);
+                int spi = nsp ? Map::SpriteAt(sp, nsp, w + i, b) : -1;
+                if (spi >= 256) dst[kExtra + w + i] = to_u32(pal888 + (ct[spi] & 0x1FF) * 4);
+                else dst[kExtra + w + i] = seen[b] == stamp ? cand[b] : to_u32(pal888 + (ct[b] & 0x1FF) * 4);
             }
             else
                 dst[kExtra + w + i] = 0xFF000000u;

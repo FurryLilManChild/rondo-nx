@@ -199,6 +199,7 @@ private:
 public:
     u32 XlatInstruction(u16 pc, u8 opcode, const u8* ops);
     u16 XlatPC() { return m_PC.GetValue(); }
+    void XlatSetPC(u16 pc) { m_PC.SetValue(pc); }
 private:
     SixteenBitRegister m_PC;
     EightBitRegister m_A;

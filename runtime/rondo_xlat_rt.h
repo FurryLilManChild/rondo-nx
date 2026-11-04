@@ -40,6 +40,8 @@ public:
     static int Dispatch(GeargrafxCore* g);
     static void SetEnabled(bool e);
     static unsigned long long s_blocks_run;
+    // Widescreen: let the game's sprite routine keep sprite pieces that fall in the side areas.
+    static bool s_wide_sprites;
     static unsigned long long s_misses;
     static unsigned long long s_instructions;
 };
