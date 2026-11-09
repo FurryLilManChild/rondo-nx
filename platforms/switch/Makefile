@@ -54,8 +54,8 @@ vpath %.c $(sort $(dir $(C_SRC)))
 .PHONY: all clean
 all: rondo-nx.nro
 
-rondo-nx.nro: $(BUILD)/rondo-nx.elf $(BUILD)/rondo-nx.nacp
-	elf2nro $(BUILD)/rondo-nx.elf $@ --nacp=$(BUILD)/rondo-nx.nacp --icon=$(LIBNX)/default_icon.jpg
+rondo-nx.nro: $(BUILD)/rondo-nx.elf $(BUILD)/rondo-nx.nacp $(ROOT)/platforms/switch/res/icon.jpg
+	elf2nro $(BUILD)/rondo-nx.elf $@ --nacp=$(BUILD)/rondo-nx.nacp --icon=$(ROOT)/platforms/switch/res/icon.jpg
 	@echo built $@
 
 $(BUILD)/rondo-nx.nacp: Makefile | $(BUILD)
