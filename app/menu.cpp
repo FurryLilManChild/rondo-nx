@@ -80,7 +80,7 @@ void MenuSettings::Parse(const std::string& text)
 // ------------------------------------------------------------------ menu logic
 
 enum MainItem { MI_RESUME, MI_RESET, MI_SAVE, MI_LOAD, MI_CONTROLS, MI_OPTIONS, MI_CHEATS, MI_QUIT, MI_COUNT };
-enum CheatItem { CI_HP, CI_HEARTS, CI_SUBWEAPON, CI_BACK, CI_COUNT };
+enum CheatItem { CI_HP, CI_HEARTS, CI_CURRENT, CI_SUBWEAPON, CI_BACK, CI_COUNT };
 enum OptItem { OI_LANGUAGE, OI_VOLUME, OI_ASPECT, OI_PIXELS, OI_FULLSCREEN, OI_SCALE, OI_PERF, OI_BACK };
 
 static std::vector<int> options_items(MenuHost* h)
@@ -143,8 +143,16 @@ MenuResult Menu::Nav(MenuNav n)
     int count = ItemCount();
     switch (n)
     {
-    case NAV_UP: m_sel = (m_sel + count - 1) % count; m_lang_pending = -1; return MR_NONE;
-    case NAV_DOWN: m_sel = (m_sel + 1) % count; m_lang_pending = -1; return MR_NONE;
+    case NAV_UP:
+        m_sel = (m_sel + count - 1) % count;
+        if (m_page == PAGE_CHEATS && m_sel == CI_CURRENT) m_sel = (m_sel + count - 1) % count;   // read-only row
+        m_lang_pending = -1;
+        return MR_NONE;
+    case NAV_DOWN:
+        m_sel = (m_sel + 1) % count;
+        if (m_page == PAGE_CHEATS && m_sel == CI_CURRENT) m_sel = (m_sel + 1) % count;
+        m_lang_pending = -1;
+        return MR_NONE;
     case NAV_LEFT: return Activate(-1);
     case NAV_RIGHT: return Activate(+1);
     case NAV_OK: return Activate(0);
@@ -408,13 +416,14 @@ void Menu::Draw(uint8_t* p)
             {
             case CI_HP: label = "Infinite health"; value = m_s->cheat_hp ? "< On >" : "< Off >"; break;
             case CI_HEARTS: label = "Infinite hearts"; value = m_s->cheat_hearts ? "< On >" : "< Off >"; break;
-            case CI_SUBWEAPON: label = "Subweapon"; value = std::string("< ") + SubweaponName(m_s->subweapon) + " >"; break;
+            case CI_CURRENT: label = "Holding now"; value = std::string("  ") + (m_cur_sub < 0 ? "-" : SubweaponNameForId(m_cur_sub)); c = C_GRAY; break;
+            case CI_SUBWEAPON: label = "Replace with"; value = std::string("< ") + SubweaponName(m_s->subweapon) + " >"; break;
             case CI_BACK: label = "Back"; break;
             }
             Text(p, x0, y, label, c);
             if (!value.empty()) Text(p, x0 + 136, y, value, c);
         }
-        Text(p, 28, H - 46, "Subweapon: OK gives it now.", C_GRAY);
+        Text(p, 28, H - 46, "Replace with: press A to swap it in.", C_GRAY);
         Text(p, 28, H - 36, "Pits still kill. Made for Richter.", C_GRAY);
         Text(p, 28, H - 26, "Left/Right: change  Back: return", C_DIM);
         return;
@@ -549,6 +558,13 @@ static const char* k_sub_names[SUBWEAPON_COUNT] = {"Dagger", "Axe", "Holy Water"
 static const uint8_t k_sub_ids[SUBWEAPON_COUNT] = {0x05, 0x02, 0x04, 0x03, 0x08, 0x06, 0x07};
 
 const char* SubweaponName(int i) { return (i >= 0 && i < SUBWEAPON_COUNT) ? k_sub_names[i] : "?"; }
+
+const char* SubweaponNameForId(int id)
+{
+    if (id == 0) return "None";
+    for (int i = 0; i < SUBWEAPON_COUNT; i++) if (k_sub_ids[i] == id) return k_sub_names[i];
+    return "Other";
+}
 uint8_t SubweaponId(int i) { return (i >= 0 && i < SUBWEAPON_COUNT) ? k_sub_ids[i] : 0; }
 
 bool ApplyCheats(uint8_t* wram, const MenuSettings& s, int give_subweapon)

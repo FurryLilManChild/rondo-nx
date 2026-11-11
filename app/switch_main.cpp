@@ -451,6 +451,27 @@ static const char* npad_name(int bit)
     return (bit >= 0 && bit < 16) ? names[bit] : "?";
 }
 
+// Save state slot times, read once (at start and after a language switch) and updated after each
+// save. The menu shows them every frame; asking the SD card each frame would wait behind a save
+// state that is still being written in the background, freezing the menu until it finishes.
+static std::string s_slot_info[6];
+static void slot_info_set_time(int slot, time_t t)
+{
+    struct tm* lt = localtime(&t);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%m/%d %H:%M", lt);
+    s_slot_info[slot] = buf;
+}
+static void slot_info_refresh()
+{
+    for (int slot = 1; slot <= 5; slot++)
+    {
+        struct stat st;
+        if (stat(state_path(slot).c_str(), &st) != 0) s_slot_info[slot] = "Empty";
+        else slot_info_set_time(slot, st.st_mtime);
+    }
+}
+
 struct SwitchHost : public MenuHost
 {
     bool HasKeyboard() { return false; }
@@ -459,13 +480,8 @@ struct SwitchHost : public MenuHost
     std::string PadName(int code) { return npad_name(code); }
     std::string SlotInfo(int slot)
     {
-        struct stat st;
-        if (stat(state_path(slot).c_str(), &st) != 0) return "Empty";
-        time_t t = st.st_mtime;
-        struct tm* lt = localtime(&t);
-        char buf[32];
-        strftime(buf, sizeof(buf), "%m/%d %H:%M", lt);
-        return buf;
+        if (slot < 1 || slot > 5) return "Empty";
+        return s_slot_info[slot];
     }
     void DefaultBindings(MenuSettings& s)
     {
@@ -544,6 +560,7 @@ int main(int argc, char** argv)
     if (!cue_override.empty()) cue_for[ms.language] = cue_override;
     if (cue_for[ms.language].empty() && !cue_for[1 - ms.language].empty()) ms.language = 1 - ms.language;
     s_japanese = (ms.language == 1);
+    slot_info_refresh();
     std::string cue = cue_for[ms.language];
     if (cue.empty() || !exists(cue))
     {
@@ -657,6 +674,7 @@ int main(int argc, char** argv)
                 menu.Toast(s_japanese ? "Japanese" : "English");
             }
             cache_start(core);
+            slot_info_refresh();
             break;
         case MR_VOLUME: s_volume = ms.volume; break;
         case MR_SUBWEAPON: give_sub = ms.subweapon; break;
@@ -735,6 +753,10 @@ int main(int argc, char** argv)
             }
         }
         menu.Tick();
+        {
+            const u8* w = core->GetMemory()->GetMemoryMap()[0xF8];
+            menu.SetCurrentSubweapon(w[0x99] ? w[0x93] : -1);
+        }
 
         // Report a finished background state write.
         if (s_state_done)
@@ -743,6 +765,7 @@ int main(int argc, char** argv)
             char t[40];
             snprintf(t, sizeof(t), s_state_ok ? "Saved to slot %d" : "Couldn't save slot %d", s_state_slot);
             menu.Toast(t);
+            if (s_state_ok && s_state_slot >= 1 && s_state_slot <= 5) slot_info_set_time(s_state_slot, time(NULL));
         }
 
         // Performance readout, refreshed once a second.

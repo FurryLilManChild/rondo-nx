@@ -541,6 +541,10 @@ int main(int argc, char** argv)
             }
         }
         menu.Tick();
+        {
+            const u8* w = g_core->GetMemory()->GetMemoryMap()[0xF8];
+            menu.SetCurrentSubweapon(w[0x99] ? w[0x93] : -1);
+        }
 
         GG_Runtime_Info ri;
         g_core->GetRuntimeInfo(ri);

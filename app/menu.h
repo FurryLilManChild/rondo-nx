@@ -90,6 +90,9 @@ public:
     // Performance readout text (shown in the top left corner when settings.perf is on).
     void SetHud(const std::string& text) { m_hud = text; }
 
+    // The subweapon the player holds now (the game's value at F8:0093), or -1 outside a stage.
+    void SetCurrentSubweapon(int id) { m_cur_sub = id; }
+
     // Draws the overlay. Pixels are RGBA bytes, W*H*4, fully rewritten each call.
     void Draw(uint8_t* rgba);
 
@@ -112,6 +115,7 @@ private:
     int m_capture_frames = 0;
     std::string m_toast;
     std::string m_hud;
+    int m_cur_sub = -1;
     int m_toast_frames = 0;
     int m_lang_pending = -1;    // language change waiting for confirmation
 };
@@ -123,6 +127,7 @@ const char* BindActionName(int a);
 //   F8:0093 subweapon  F8:0094 hearts (BCD)  F8:0098 health  F8:0099 max health
 enum { SUBWEAPON_COUNT = 7 };
 const char* SubweaponName(int i);     // display name for Cheats page index i
+const char* SubweaponNameForId(int id);   // display name for the game's value at F8:0093
 uint8_t SubweaponId(int i);           // game's value for F8:0093
 // Applies cheats to work RAM once per frame. give_subweapon: index to hand over now
 // (-1 for none); returns true when it was applied (only during gameplay).
