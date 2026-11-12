@@ -47,6 +47,10 @@ namespace RondoWide
     // How far the current room extends past the left and right screen edges, in pixels, from
     // the game's camera limits (work RAM F8). Outside these the side areas stay black.
     void RoomExtent(GeargrafxCore* core, int* left, int* right);
+
+    // What the HUD placement decided on the last picture built: the shift in pixels (0 at a room
+    // edge), or -1 not in a stage, -2 map no wider than the screen, -3 HUD sprites not found.
+    extern int s_hud_status;
     void Capture(GeargrafxCore* core, Snapshot* snap, bool side_ok);
     void Compose(const Snapshot& snap, const uint8_t* frame, int w, int h, uint8_t* out, int hud_rows);
 

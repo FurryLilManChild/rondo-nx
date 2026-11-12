@@ -182,18 +182,24 @@ bool BgPixel(GeargrafxCore* core, int x, int y, uint32_t* rgba)
 // The game rewrites palette colours partway down the screen (sky gradients and the like), so the
 // end-of-frame colour table is wrong for many lines. Each row learns its real colours from the
 // visible middle of the same row: for every colour index seen there, the most common picture colour.
-// The in-game HUD (health bar, hearts and subweapon box, score) is the first four entries of the
-// sprite table at fixed screen positions. Only when they're exactly there is the HUD moved.
-static bool hud_in_place(const u16* sat)
+// The in-game HUD (health bar, hearts and subweapon box, score) is four sprites at fixed screen
+// positions, normally the first four entries of the sprite table. They're found by position
+// anywhere in the table, in case the game ever reorders it; the HUD only moves when all four are there.
+static bool hud_find(const u16* sat, bool* is_hud)
 {
     static const int pos[4][2] = {{8, 16}, {8, 48}, {40, 16}, {72, 16}};
-    for (int i = 0; i < 4; i++)
+    int found = 0;
+    for (int i = 0; i < 64; i++)
     {
+        is_hud[i] = false;
         int y = (sat[i * 4] & 0x3FF) - 64, x = (sat[i * 4 + 1] & 0x3FF) - 32;
-        if (x != pos[i][0] || y != pos[i][1]) return false;
+        for (int k = 0; k < 4; k++)
+            if (x == pos[k][0] && y == pos[k][1] && !(found & (1 << k))) { found |= 1 << k; is_hud[i] = true; break; }
     }
-    return true;
+    return found == 0xF;
 }
+
+int s_hud_status = 0;
 
 static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t* frame, int w, int h, uint8_t* out, bool side_ok, int hud_rows,
                     int room_left, int room_right)
@@ -201,8 +207,15 @@ static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t
     // Widescreen HUD: slide it left onto the level's visible left edge (all the way into the side
     // area in open places, against the room edge elsewhere, unmoved in rooms that don't scroll).
     int hud_shift = 0;
-    if (side_ok && m.mapw * 8 > w && hud_in_place(m.sat))
+    static bool is_hud[64];
+    if (!side_ok) s_hud_status = -1;                       // not in a stage
+    else if (m.mapw * 8 <= w) s_hud_status = -2;           // map no wider than the screen
+    else if (!hud_find(m.sat, is_hud)) s_hud_status = -3;  // HUD sprites not where the HUD sits
+    else
+    {
         hud_shift = room_left < kExtra ? room_left : kExtra;
+        s_hud_status = hud_shift;
+    }
     const int ow = w + 2 * kExtra;
     if (m.mapw * 8 <= w) side_ok = false;     // the map is no wider than the screen: nothing to show
     static uint32_t cand[256];
@@ -264,7 +277,7 @@ static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t
             int nh = 0, no = 0, hud_right = -1000;
             for (int k = 0; k < nsp; k++)
             {
-                if (sp[k].sat < 4 && nh < 16) { hud[nh++] = sp[k]; if (sp[k].x + 16 > hud_right) hud_right = sp[k].x + 16; }
+                if (is_hud[sp[k].sat] && nh < 16) { hud[nh++] = sp[k]; if (sp[k].x + 16 > hud_right) hud_right = sp[k].x + 16; }
                 else oth[no++] = sp[k];
             }
             if (nh)

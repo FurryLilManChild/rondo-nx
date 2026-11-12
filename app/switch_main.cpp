@@ -784,10 +784,17 @@ int main(int argc, char** argv)
         {
             double secs = armTicksToNs(now - perf_t0) / 1e9;
             u32 reads = CdRomCueBinImage::s_sync_loads.load();
-            char hud[48];
+            char hud[64];
             snprintf(hud, sizeof(hud), "%2.0ffps %4.1f/%4.1fms slow%2u rd%2u %s",
                 perf_frames / secs, perf_frames ? perf_sum / 1e6 / perf_frames : 0.0, perf_max / 1e6,
                 perf_slow, reads - perf_reads, s_cache_done ? "RAM" : (s_cache_running ? "..." : "SD"));
+            if (ms.aspect == 2)
+            {
+                // Widescreen HUD placement: shift in pixels, or -1 not in a stage, -2 narrow map,
+                // -3 HUD sprites not found.
+                size_t l = strlen(hud);
+                snprintf(hud + l, sizeof(hud) - l, " W%d", RondoWide::s_hud_status);
+            }
             menu.SetHud(hud);
             perf_t0 = now; perf_sum = 0; perf_max = 0; perf_frames = 0; perf_slow = 0; perf_reads = reads;
         }
