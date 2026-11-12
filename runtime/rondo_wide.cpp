@@ -25,10 +25,22 @@ void RoomExtent(GeargrafxCore* core, int* left, int* right)
     int cs = w[0x1E96] & 15, clo = w[0x1E08];
     int dl = ((cs - w[0x1EBE]) & 15) * 256 + clo;
     int dr = ((w[0x1EC6] - cs) & 15) * 256 + w[0x1EC7] - clo;
-    // The picture shows the previous camera position: adjust by how far it has moved since.
+    // Camera outside its own limits: a room change in progress (seen for one frame). Keep the sides black.
+    if (((cs - w[0x1EBE]) & 15) > ((w[0x1EC6] - w[0x1EBE]) & 15)) { *left = 0; *right = 0; return; }
+    // The picture shows the previous camera position: adjust by how far it has moved since. The game
+    // keeps that "shown" position (1E41/1E4A) only in some stages (in Stage 4 it stays 0), so it is used
+    // only while it follows the camera: once the camera moves for two frames without it changing, it's
+    // ignored until it changes again. A room change (big jump or new limits) starts over.
+    static int s_prev_cur = -1, s_prev_shown = -1, s_prev_limits = -1, s_stale = 0;
+    static bool s_live = false;
     int cur = w[0x1E08] | (w[0x1E10] << 8);
     int shown = w[0x1E41] | (w[0x1E4A] << 8);
-    int moved = cur - shown;
+    int limits = w[0x1EBE] | (w[0x1EC6] << 8) | (w[0x1EC7] << 16);
+    if (limits != s_prev_limits || cur - s_prev_cur > 64 || s_prev_cur - cur > 64) { s_live = false; s_stale = 0; }
+    else if (shown != s_prev_shown) { s_live = true; s_stale = 0; }
+    else if (cur != s_prev_cur && ++s_stale >= 2) s_live = false;
+    s_prev_cur = cur; s_prev_shown = shown; s_prev_limits = limits;
+    int moved = s_live ? cur - shown : 0;
     if (moved > 64 || moved < -64) moved = 0;     // a jump (new room): don't trust it
     dl -= moved;
     dr += moved;
