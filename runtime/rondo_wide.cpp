@@ -196,7 +196,15 @@ static bool hud_find(const u16* sat, bool* is_hud)
         for (int k = 0; k < 4; k++)
             if (x == pos[k][0] && y == pos[k][1] && !(found & (1 << k))) { found |= 1 << k; is_hud[i] = true; break; }
     }
-    return found == 0xF;
+    if (found != 0xF) return false;
+    // The subweapon icon (only there while one is held) sits inside the subweapon box at (21,28);
+    // the game puts it first in the table, ahead of the four pieces.
+    for (int i = 0; i < 64; i++)
+    {
+        int y = (sat[i * 4] & 0x3FF) - 64, x = (sat[i * 4 + 1] & 0x3FF) - 32;
+        if (x == 21 && y == 28 && !is_hud[i]) { is_hud[i] = true; break; }
+    }
+    return true;
 }
 
 int s_hud_status = 0;

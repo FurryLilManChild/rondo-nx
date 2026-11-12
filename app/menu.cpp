@@ -574,6 +574,13 @@ bool ApplyCheats(uint8_t* wram, const MenuSettings& s, int give_subweapon)
     if (max_hp == 0) return false;           // not in gameplay
     if (s.cheat_hp && wram[0x98] != 0 && wram[0x98] < max_hp) wram[0x98] = max_hp;
     if (s.cheat_hearts && wram[0x94] != 0x99) wram[0x94] = 0x99;
-    if (give_subweapon >= 0) { wram[0x93] = SubweaponId(give_subweapon); return true; }
+    if (give_subweapon >= 0)
+    {
+        // As the game's own pickup does: the new id, plus the "subweapon changed" flag (F8:1BD6).
+        // The game loads the subweapon's graphics on the next throw only while that flag is set.
+        wram[0x93] = SubweaponId(give_subweapon);
+        wram[0x1BD6] = 1;
+        return true;
+    }
     return false;
 }
