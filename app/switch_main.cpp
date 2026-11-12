@@ -677,7 +677,17 @@ int main(int argc, char** argv)
             slot_info_refresh();
             break;
         case MR_VOLUME: s_volume = ms.volume; break;
-        case MR_SUBWEAPON: give_sub = ms.subweapon; break;
+        case MR_SUBWEAPON:
+            // Swap it in right away when a stage is loaded (the game is paused behind the menu, so
+            // "Holding now" shows it at once); otherwise it's handed over when the next stage starts.
+            give_sub = ms.subweapon;
+            if (ApplyCheats(core->GetMemory()->GetMemoryMap()[0xF8], ms, give_sub))
+            {
+                menu.Toast(std::string("Subweapon: ") + SubweaponName(give_sub));
+                give_sub = -1;
+            }
+            menu.SetCurrentSubweapon(core->GetMemory()->GetMemoryMap()[0xF8][0x99] ? core->GetMemory()->GetMemoryMap()[0xF8][0x93] : -1);
+            break;
         case MR_QUIT: running = false; break;
         default: break;
         }

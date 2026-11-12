@@ -83,7 +83,7 @@ struct Map
     void Load(const Snapshot& s) { vram = s.vram; sat = s.sat; mode1 = s.sprite_mode1; lx = s.line_x; ly = s.line_y; lok = s.line_ok; mapw = s.mapw; maph = s.maph; }
 
     // Sprites on one raster line, in priority order (lowest SAT index first, as the chip does).
-    struct LineSprite { int x; u16 flags; u16 p[4]; };
+    struct LineSprite { int x; u16 flags; u16 p[4]; int sat; };
     int Sprites(int line, LineSprite* out) const
     {
         static const int heights[4] = {16, 32, 64, 64};
@@ -110,6 +110,7 @@ struct Map
                 int a = base + (cgx ? ((flags & 0x0800) ? (half ? 0 : 64) : (half ? 64 : 0)) : 0);
                 LineSprite& ls = out[n++];
                 ls.x = x + half * 16;
+                ls.sat = i;
                 ls.flags = flags;
                 ls.p[0] = vram[a & 0x7FFF]; ls.p[1] = vram[(a + 16) & 0x7FFF];
                 ls.p[2] = mode1 ? 0 : vram[(a + 32) & 0x7FFF]; ls.p[3] = mode1 ? 0 : vram[(a + 48) & 0x7FFF];
@@ -181,9 +182,27 @@ bool BgPixel(GeargrafxCore* core, int x, int y, uint32_t* rgba)
 // The game rewrites palette colours partway down the screen (sky gradients and the like), so the
 // end-of-frame colour table is wrong for many lines. Each row learns its real colours from the
 // visible middle of the same row: for every colour index seen there, the most common picture colour.
+// The in-game HUD (health bar, hearts and subweapon box, score) is the first four entries of the
+// sprite table at fixed screen positions. Only when they're exactly there is the HUD moved.
+static bool hud_in_place(const u16* sat)
+{
+    static const int pos[4][2] = {{8, 16}, {8, 48}, {40, 16}, {72, 16}};
+    for (int i = 0; i < 4; i++)
+    {
+        int y = (sat[i * 4] & 0x3FF) - 64, x = (sat[i * 4 + 1] & 0x3FF) - 32;
+        if (x != pos[i][0] || y != pos[i][1]) return false;
+    }
+    return true;
+}
+
 static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t* frame, int w, int h, uint8_t* out, bool side_ok, int hud_rows,
                     int room_left, int room_right)
 {
+    // Widescreen HUD: slide it left onto the level's visible left edge (all the way into the side
+    // area in open places, against the room edge elsewhere, unmoved in rooms that don't scroll).
+    int hud_shift = 0;
+    if (side_ok && m.mapw * 8 > w && hud_in_place(m.sat))
+        hud_shift = room_left < kExtra ? room_left : kExtra;
     const int ow = w + 2 * kExtra;
     if (m.mapw * 8 <= w) side_ok = false;     // the map is no wider than the screen: nothing to show
     static uint32_t cand[256];
@@ -237,6 +256,36 @@ static void compose(const Map& m, const u8* pal888, const u16* ct, const uint8_t
             }
             else
                 dst[kExtra + w + i] = 0xFF000000u;
+        }
+
+        if (hud_shift > 0 && nsp)
+        {
+            static Map::LineSprite hud[16], oth[128];
+            int nh = 0, no = 0, hud_right = -1000;
+            for (int k = 0; k < nsp; k++)
+            {
+                if (sp[k].sat < 4 && nh < 16) { hud[nh++] = sp[k]; if (sp[k].x + 16 > hud_right) hud_right = sp[k].x + 16; }
+                else oth[no++] = sp[k];
+            }
+            if (nh)
+            {
+                int x_end = hud_right < w ? hud_right : w;
+                for (int x = -hud_shift; x < x_end; x++)
+                {
+                    uint32_t* d = dst + kExtra + x;
+                    int bg = m.Index(li, x);
+                    // where the HUD used to be: show what's underneath it instead
+                    if (x >= 0 && Map::SpriteAt(hud, nh, x, bg) >= 256)
+                    {
+                        int so = no ? Map::SpriteAt(oth, no, x, bg) : -1;
+                        if (so >= 256) *d = to_u32(pal888 + (ct[so] & 0x1FF) * 4);
+                        else *d = seen[bg] == stamp ? cand[bg] : to_u32(pal888 + (ct[bg] & 0x1FF) * 4);
+                    }
+                    // the HUD in its new place
+                    int sh = Map::SpriteAt(hud, nh, x + hud_shift, bg);
+                    if (sh >= 256) *d = to_u32(pal888 + (ct[sh] & 0x1FF) * 4);
+                }
+            }
         }
     }
 }
